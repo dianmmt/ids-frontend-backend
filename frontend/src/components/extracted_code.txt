@@ -1,0 +1,123 @@
+================================================================================
+CODE EXTRACTION REPORT
+================================================================================
+
+Total files processed: 2
+Base folder: C:\Users\DELL\Downloads\project-bolt-sb1-hnex4aft\project\src\components\ui
+
+
+============================================================
+FILE #1
+============================================================
+File Name: Chart.tsx
+Relative Path: Chart.tsx
+Absolute Path: ./ui\Chart.tsx
+Extension: .tsx
+Lines: 41
+------------------------------------------------------------
+CONTENT:
+------------------------------------------------------------
+import React from 'react';
+
+interface ChartProps {
+  type: 'line' | 'bar';
+}
+
+export const Chart: React.FC<ChartProps> = ({ type }) => {
+  // Mock data visualization - in real implementation, integrate with charting library
+  const data = Array.from({ length: 20 }, (_, i) => ({
+    x: i,
+    y: Math.random() * 100 + 20
+  }));
+
+  if (type === 'line') {
+    return (
+      <div className="h-40 bg-gray-900/50 rounded-lg p-4 flex items-end space-x-1">
+        {data.map((point, index) => (
+          <div key={index} className="flex-1 flex flex-col justify-end">
+            <div 
+              className="bg-gradient-to-t from-blue-600 to-blue-400 rounded-t-sm opacity-80 hover:opacity-100 transition-opacity"
+              style={{ height: `${point.y}%` }}
+            ></div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-40 bg-gray-900/50 rounded-lg p-4 flex items-end space-x-2">
+      {data.slice(0, 10).map((point, index) => (
+        <div key={index} className="flex-1 flex flex-col justify-end">
+          <div 
+            className="bg-gradient-to-t from-purple-600 to-purple-400 rounded-t-sm opacity-80 hover:opacity-100 transition-opacity"
+            style={{ height: `${point.y}%` }}
+          ></div>
+        </div>
+      ))}
+    </div>
+  );
+};
+------------------------------------------------------------
+
+============================================================
+FILE #2
+============================================================
+File Name: MetricCard.tsx
+Relative Path: MetricCard.tsx
+Absolute Path: ./ui\MetricCard.tsx
+Extension: .tsx
+Lines: 49
+------------------------------------------------------------
+CONTENT:
+------------------------------------------------------------
+import React from 'react';
+import { DivideIcon as LucideIcon, TrendingUp, TrendingDown } from 'lucide-react';
+
+interface MetricCardProps {
+  title: string;
+  value: string;
+  change: string;
+  changeType: 'positive' | 'negative' | 'neutral';
+  icon: LucideIcon;
+  iconColor: string;
+}
+
+export const MetricCard: React.FC<MetricCardProps> = ({
+  title,
+  value,
+  change,
+  changeType,
+  icon: Icon,
+  iconColor
+}) => {
+  const changeColor = {
+    positive: 'text-green-400',
+    negative: 'text-red-400',
+    neutral: 'text-gray-400'
+  };
+
+  const ChangeTrendIcon = changeType === 'positive' ? TrendingUp : 
+                         changeType === 'negative' ? TrendingDown : null;
+
+  return (
+    <div className="bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700 hover:bg-gray-800/70 transition-all duration-200">
+      <div className="flex items-center justify-between mb-4">
+        <div className={`p-3 rounded-lg bg-gray-700/50`}>
+          <Icon size={24} className={iconColor} />
+        </div>
+        {ChangeTrendIcon && (
+          <div className={`flex items-center space-x-1 ${changeColor[changeType]}`}>
+            <ChangeTrendIcon size={16} />
+            <span className="text-sm font-medium">{change}</span>
+          </div>
+        )}
+      </div>
+      <div>
+        <h3 className="text-2xl font-bold text-white mb-1">{value}</h3>
+        <p className="text-gray-400 text-sm">{title}</p>
+      </div>
+    </div>
+  );
+};
+------------------------------------------------------------
