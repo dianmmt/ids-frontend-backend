@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  database:
+    image: postgres:15-alpine
+    container_name: sdn-ids-db
+    environment:
+      POSTGRES_DB: sdn_ids
+      POSTGRES_USER: sdn_user
+      POSTGRES_PASSWORD: sdn_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/sample_data.sql:/docker-entrypoint-initdb.d/02-sample.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - sdn-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sdn_user -d sdn_ids"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ML Service (Python)
+  ml:
+    build:
+      context: ./ml
+      dockerfile: Dockerfile
+    container_name: sdn-ids-ml
+    environment:
+      - PYTHONPATH=/app
+      - DEBUG=false
+    ports:
+      - "5000:5000"
+    networks:
+      - sdn-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    volumes:
+      # Mount your model files (optional, for easy updates)
+      - ./ml/model.pkl:/app/model.pkl:ro
+      - ./ml/inference.py:/app/inference.py:ro
+
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sdn-ids-backend
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_NAME=sdn_ids
+      - DB_USER=sdn_user
+      - DB_PASSWORD=sdn_password
+      - ML_API_URL=http://ml:5000
+    ports:
+      - "3001:3001"
+    depends_on:
+      database:
+        condition: service_healthy
+      ml:
+        condition: service_healthy
+    networks:
+      - sdn-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Frontend React App
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: sdn-ids-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - sdn-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  sdn-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+# =============================================================================
+# 🎯 USAGE INSTRUCTIONS:
+# =============================================================================
+# 
+# 1. Chuẩn bị files:
+#    - Đặt model.pkl vào thư mục ml/
+#    - Đặt inference.py vào thư mục ml/
+#    - Copy database schema vào database/schema.sql
+# 
+# 2. Start system:
+#    docker-compose up -d
+# 
+# 3. URLs:
+#    - Frontend: http://localhost
+#    - Backend API: http://localhost:3001
+#    - ML API: http://localhost:5000
+#    - Database: localhost:5432
+# 
+# 4. Test ML service:
+#    curl http://localhost:5000/health
+#    curl http://localhost:5000/test
+# 
+# 5. Test full prediction:
+#    curl -X POST http://localhost:3001/api/ml/predict \
+#      -H "Content-Type: application/json" \
+#      -d '{"packet_count": 100, "byte_count": 5000, "duration_seconds": 10}'
+#
+# =============================================================================
