@@ -1,30 +1,62 @@
-// backend/server.js
-const express = require('express');
-const cors = require('cors');
-const { Pool } = require('pg');
-const http = require('http');
-const socketIo = require('socket.io');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import { Pool } from 'pg';
+import http from 'http';
+import { Server } from 'socket.io';
+import dotenv from 'dotenv';
+import rateLimit from 'express-rate-limit';
+import authRoutes from './routes/auth.js';
+import performanceRoutes from './routes/performance.js';
+import { initializeDatabase, closeDatabase } from './services/database.js';
+import performanceScheduler from './services/performanceScheduler.js';
+import config from './services/config.js';
+
+dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: config.server.cors.origin,
     methods: ["GET", "POST"]
   }
 });
+const pool = new Pool(config.database);
+const PORT = config.server.port || process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable for development
+}));
 
-// Database connection
-const pool = new Pool({
-  user: process.env.DB_USER || 'sdn_user',
-  host: process.env.DB_HOST || 'localhost',
-  database: process.env.DB_NAME || 'sdn_ids',
-  password: process.env.DB_PASSWORD || 'sdn_password',
-  port: process.env.DB_PORT || 5432,
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api', limiter);
+
+// CORS configuration
+const corsOptions = {
+  origin: config.server.cors.origin || process.env.FRONTEND_URL || 'http://localhost:3000',
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${req.method} ${req.originalUrl} - IP: ${req.ip}`);
+  next();
 });
 
 // Test database connection
@@ -37,7 +69,11 @@ pool.connect()
     console.error('❌ Database connection error:', err);
   });
 
-// Dashboard API - Get system overview
+// API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/performance', performanceRoutes);
+
+// Dashboard API
 app.get('/api/dashboard/summary', async (req, res) => {
   try {
     const result = await pool.query('SELECT get_dashboard_summary()');
@@ -264,11 +300,9 @@ io.on('connection', (socket) => {
   // Simulate real-time updates
   const interval = setInterval(async () => {
     try {
-      // Send dashboard updates
       const dashboardResult = await pool.query('SELECT get_dashboard_summary()');
       socket.emit('dashboard_update', dashboardResult.rows[0].get_dashboard_summary);
       
-      // Send recent attacks
       const attacksResult = await pool.query(`
         SELECT * FROM attack_events 
         WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '5 minutes'
@@ -293,12 +327,80 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     timestamp: new Date().toISOString(),
-    database: 'connected'
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    database: 'connected',
+    scheduler: performanceScheduler.getStatus()
   });
 });
 
-const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`🚀 SDN-IDS Server running on port ${PORT}`);
-  console.log(`📊 Dashboard: http://localhost:${PORT}/api/health`);
+// Error handling middleware
+app.use((error, req, res, next) => {
+  console.error(`[ERROR] ${error.stack}`);
+  const isDevelopment = process.env.NODE_ENV !== 'production';
+  res.status(error.status || 500).json({
+    success: false,
+    message: error.message || 'Internal Server Error',
+    ...(isDevelopment && { stack: error.stack })
+  });
 });
+
+// Handle 404
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found'
+  });
+});
+
+// Initialize server
+async function startServer() {
+  try {
+    console.log('Starting SDN-IDS Performance Monitoring Server...');
+    
+    // Initialize database connection
+    await initializeDatabase();
+    console.log('✓ Database connection established');
+    
+    // Start the server
+    server.listen(PORT, () => {
+      console.log(`✓ Server running on port ${PORT}`);
+      console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`✓ API endpoints available at: http://localhost:${PORT}/api`);
+    });
+    
+    // Start performance monitoring scheduler
+    performanceScheduler.start();
+    console.log('✓ Performance monitoring scheduler started');
+    
+    // Graceful shutdown handling
+    const gracefulShutdown = async (signal) => {
+      console.log(`\nReceived ${signal}, shutting down gracefully...`);
+      server.close(() => console.log('✓ HTTP server closed'));
+      performanceScheduler.stop();
+      console.log('✓ Performance scheduler stopped');
+      await closeDatabase();
+      console.log('✓ Database connections closed');
+      console.log('Graceful shutdown completed');
+      process.exit(0);
+    };
+    
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught Exception:', error);
+      process.exit(1);
+    });
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+      process.exit(1);
+    });
+    
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Start the server
+startServer();

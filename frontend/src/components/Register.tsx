@@ -7,7 +7,7 @@ interface RegisterProps {
     email: string;
     password: string;
     full_name: string;
-    role: string;
+    role?: 'analyst' | 'viewer';
   }) => void;
   onSwitchToLogin: () => void;
   loading?: boolean;
@@ -26,7 +26,7 @@ export const Register: React.FC<RegisterProps> = ({
     password: '',
     confirmPassword: '',
     full_name: '',
-    role: 'viewer'
+    role: 'viewer' as 'analyst' | 'viewer'
   });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -132,7 +132,7 @@ export const Register: React.FC<RegisterProps> = ({
               />
             </div>
 
-            {/* Role Field */}
+            {/* Role Selection (viewer/analyst only) */}
             <div>
               <label htmlFor="role" className="block text-sm font-medium text-gray-300">
                 Role
@@ -146,7 +146,6 @@ export const Register: React.FC<RegisterProps> = ({
               >
                 <option value="viewer">Viewer</option>
                 <option value="analyst">Analyst</option>
-                <option value="admin">Admin</option>
               </select>
             </div>
 

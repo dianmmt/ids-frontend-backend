@@ -46,7 +46,6 @@ function App() {
     email: string;
     password: string;
     full_name: string;
-    role: string;
   }) => {
     setAuthLoading(true);
     setAuthError('');

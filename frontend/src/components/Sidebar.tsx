@@ -1,11 +1,10 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Shield, 
   Home, 
   Network, 
   AlertTriangle, 
   Activity, 
-  Brain, 
   BarChart3, 
   Settings, 
   LogOut,
@@ -13,7 +12,7 @@ import {
   Users
 } from 'lucide-react';
 import { ViewType } from '../App';
-import { User } from '../services/authService';
+import { User, authService } from '../services/authService';
 
 interface SidebarProps {
   currentView: ViewType;
@@ -30,7 +29,7 @@ const navigationItems = [
   { id: 'attacks', icon: AlertTriangle, label: 'Attack Detection', badge: '24' },
   { id: 'analytics', icon: Activity, label: 'Flow Analysis', badge: null },
   { id: 'performance', icon: BarChart3, label: 'Perfomance', badge: null },
-  { id: 'users', icon: Users, label: 'User Management', badge: null },
+  { id: 'users', icon: Users, label: 'User Management', badge: null, adminOnly: true },
   { id: 'settings', icon: Settings, label: 'Settings', badge: null },
 ];
 
@@ -43,6 +42,44 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentUser
 }) => {
   const cn = (...classes: string[]) => classes.filter(Boolean).join(' ');
+
+  const visibleNavItems = navigationItems.filter(item => !item.adminOnly || currentUser?.role === 'admin');
+
+  const [lastLogin, setLastLogin] = useState<string | null>(null);
+  const [sessionSeconds, setSessionSeconds] = useState<number>(0);
+
+  useEffect(() => {
+    let timer: any;
+    const load = async () => {
+      try {
+        const info = await authService.getSessionInfo();
+        setLastLogin(info.last_login);
+        setSessionSeconds(info.session_seconds);
+      } catch (e) {
+        // ignore
+      }
+    };
+    load();
+
+    // Update session timer locally every second
+    timer = setInterval(() => {
+      setSessionSeconds(prev => (lastLogin && prev >= 0 ? prev + 1 : prev));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isOpen]);
+
+  const formatSession = (totalSeconds: number) => {
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    return `${h}h ${m}m`;
+  };
+
+  const formatTime = (iso: string | null) => {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
 
   return (
     <>
@@ -85,8 +122,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {/* Navigation Menu */}
         <nav className="flex-1 p-4 overflow-y-auto">
           <ul className="space-y-2">
-            {navigationItems.map((item) => {
-              const isActive = currentView === item.id;
+            {visibleNavItems.map((item) => {
+              const isActive = currentView === (item.id as ViewType);
               const Icon = item.icon;
               
               return (
@@ -129,12 +166,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <p className="text-sm font-medium text-white truncate">
                 {currentUser?.full_name || 'User'}
               </p>
-              <p className="text-xs text-gray-400 truncate capitalize">
+              <p className="text-xs text-gray-400 truncate capitalize mb-1">
                 {currentUser?.role || 'User'}
               </p>
-              <div className="flex items-center space-x-2 mt-1">
-                <div className="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"></div>
-                <span className="text-xs text-green-400">Online</span>
+              {/* Session info - horizontal layout */}
+              <div className="flex items-center justify-between text-xs text-gray-400">
+                <span className="flex items-center">
+                  Last: <span className="text-gray-300 ml-1">{formatTime(lastLogin)}</span>
+                </span>
+                <span className="flex items-center">
+                  Session: <span className="text-gray-300 ml-1">{formatSession(sessionSeconds)}</span>
+                </span>
               </div>
             </div>
             <button 
@@ -143,18 +185,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <LogOut className="h-4 w-4" />
             </button>
-          </div>
-          
-          {/* Additional User Info */}
-          <div className="mt-3 pt-3 border-t border-gray-700">
-            <div className="flex justify-between items-center text-xs text-gray-400 mb-2">
-              <span>Last Login</span>
-              <span>2:30 PM</span>
-            </div>
-            <div className="flex justify-between items-center text-xs text-gray-400">
-              <span>Session Time</span>
-              <span>4h 25m</span>
-            </div>
           </div>
         </div>
       </aside>
