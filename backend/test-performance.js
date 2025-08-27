@@ -1,6 +1,5 @@
 // Test script for performance calculations
 import performanceService from './services/performanceService.js';
-import os from 'os';
 
 async function testPerformanceCalculations() {
   console.log('🧪 Testing Performance Calculations...\n');
@@ -21,6 +20,7 @@ async function testPerformanceCalculations() {
 
     // Test memory usage calculation
     console.log('\n3. Testing Memory Usage Calculation...');
+    const os = require('os');
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
     const memoryUsage = ((totalMem - freeMem) / totalMem) * 100;
