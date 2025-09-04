@@ -1,0 +1,14 @@
+URL database: http://localhost:8080
+
+Kết nối tới server Postgres (host: postgres, user: sdn_user, pass: sdn_password, db: sdn_ids).
+
+
+update code lên github
+git add .
+git commit -m "Cập nhật thêm file 03-performance.sql"
+git push
+
+khởi động docker compose
+docker-compose -f docker-compose.db.yml up -d
+docker-compose -f docker-compose.db.yml down -v
+docker exec -i sdn-ids-postgres psql -U sdn_user -d sdn_ids -f /docker-entrypoint-initdb.d/02-insert-sample-data.sql
