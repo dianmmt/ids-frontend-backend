@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './components/Dashboard';
-import { AttackDetection } from './components/AttackDetection';
+import AttackDetection from './components/AttackDetection';
 import { NetworkTopology } from './components/NetworkTopology';
 import { SecurityAnalytics } from './components/SecurityAnalytics';
 import { PerformanceMonitor } from './components/PerformanceMonitor';
@@ -24,6 +24,7 @@ function App() {
   const [showLogin, setShowLogin] = useState(true);
   const [authError, setAuthError] = useState<string>('');
   const [authLoading, setAuthLoading] = useState(false);
+  const [attackCount, setAttackCount] = useState<number>(0);
 
   // Authentication functions
   const handleLogin = async (credentials: { username: string; password: string }) => {
@@ -73,6 +74,10 @@ function App() {
     }
   };
 
+  const handleAttackCountUpdate = (count: number) => {
+    setAttackCount(count);
+  };
+
   // Check authentication on app load
   useEffect(() => {
     const checkAuth = async () => {
@@ -97,7 +102,7 @@ function App() {
       case 'dashboard':
         return <Dashboard />;
       case 'attacks':
-        return <AttackDetection />;
+        return <AttackDetection onAttackCountUpdate={handleAttackCountUpdate} />;
       case 'analytics':
         return <SecurityAnalytics />;
       case 'topology':
@@ -155,6 +160,7 @@ function App() {
         onClose={() => setSidebarOpen(false)}
         onLogout={handleLogout}
         currentUser={currentUser}
+        attackCount={attackCount}
       />
       
       {/* Fixed Header - positioned after sidebar on desktop */}

@@ -66,6 +66,3 @@ SELECT
   created_at, updated_at
 FROM ml_models
 WHERE is_active = TRUE;
-
-
-

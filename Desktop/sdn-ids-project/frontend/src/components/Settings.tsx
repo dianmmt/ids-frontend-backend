@@ -24,7 +24,9 @@ import {
   Download,
   FileText,
   Zap,
-  Star
+  Star,
+  Settings as SettingsIcon,
+  XCircle
 } from 'lucide-react';
 
 interface SystemSettings {
@@ -155,7 +157,18 @@ export const Settings: React.FC = () => {
   ]);
   const [uploading, setUploading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [meta, setMeta] = useState({ name: '', version: '', framework: '', description: '' });
+  const [meta, setMeta] = useState({ 
+    name: '', 
+    version: '', 
+    framework: '', 
+    description: '',
+    accuracy: '',
+    precision_score: '',
+    recall_score: '',
+    f1_score: '',
+    training_samples: '',
+    test_samples: ''
+  });
   const [dragOver, setDragOver] = useState(false);
   const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
 
@@ -194,7 +207,7 @@ export const Settings: React.FC = () => {
     if (files.length > 0) {
       const file = files[0];
       const ext = file.name.split('.').pop()?.toLowerCase();
-      if (ext === 'pkl' || ext === 'h5') {
+      if (ext === 'pkl' || ext === 'h5' || ext === 'joblib') {
         setSelectedFile(file);
       }
     }
@@ -204,8 +217,8 @@ export const Settings: React.FC = () => {
     e.preventDefault();
     if (!selectedFile) return;
     const ext = selectedFile.name.split('.').pop()?.toLowerCase();
-    if (!(ext === 'pkl' || ext === 'h5')) {
-      alert('Please upload a .pkl or .h5 file');
+    if (!(ext === 'pkl' || ext === 'h5' || ext === 'joblib')) {
+      alert('Please upload a .pkl, .h5, or .joblib file');
       return;
     }
     setUploading(true);
@@ -233,13 +246,30 @@ export const Settings: React.FC = () => {
           format: ext,
           framework: meta.framework || undefined,
           description: meta.description || undefined,
-          base64Content
+          base64Content,
+          accuracy: meta.accuracy ? parseFloat(meta.accuracy) : undefined,
+          precision_score: meta.precision_score ? parseFloat(meta.precision_score) : undefined,
+          recall_score: meta.recall_score ? parseFloat(meta.recall_score) : undefined,
+          f1_score: meta.f1_score ? parseFloat(meta.f1_score) : undefined,
+          training_samples: meta.training_samples ? parseInt(meta.training_samples) : undefined,
+          test_samples: meta.test_samples ? parseInt(meta.test_samples) : undefined
         })
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message || 'Upload failed');
       setSelectedFile(null);
-      setMeta({ name: '', version: '', framework: '', description: '' });
+      setMeta({ 
+        name: '', 
+        version: '', 
+        framework: '', 
+        description: '',
+        accuracy: '',
+        precision_score: '',
+        recall_score: '',
+        f1_score: '',
+        training_samples: '',
+        test_samples: ''
+      });
       await fetchModels();
     } catch (err: any) {
       alert(err.message || 'Upload error');
@@ -256,9 +286,23 @@ export const Settings: React.FC = () => {
       });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message || 'Activation failed');
-      setModels(models.map(m => ({ ...m, is_active: m.id === id })));
+      setModels(models.map(m => ({ ...m, is_active: m.id === id ? true : m.is_active })));
     } catch (e: any) {
       alert(e.message || 'Activation error');
+    }
+  }
+
+  async function deactivateModel(id: string) {
+    try {
+      const res = await fetch(`/api/ml/models/${id}/deactivate`, {
+        method: 'POST',
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || 'Deactivation failed');
+      setModels(models.map(m => ({ ...m, is_active: m.id === id ? false : m.is_active })));
+    } catch (e: any) {
+      alert(e.message || 'Deactivation error');
     }
   }
 
@@ -498,9 +542,18 @@ export const Settings: React.FC = () => {
                   <p className="text-sm text-gray-400 mt-1">Manage your AI models for threat detection and network analysis</p>
                 </div>
               </div>
-              <div className="flex items-center space-x-2 text-sm text-gray-400">
-                <Activity className="h-4 w-4" />
-                <span>{models.filter(m => m.is_active).length} active model{models.filter(m => m.is_active).length !== 1 ? 's' : ''}</span>
+              <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-2 text-sm text-gray-400">
+                  <Activity className="h-4 w-4" />
+                  <span>{models.filter(m => m.is_active).length} active model{models.filter(m => m.is_active).length !== 1 ? 's' : ''}</span>
+                </div>
+                <a
+                  href="/model-management"
+                  className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  <SettingsIcon className="h-4 w-4" />
+                  <span>Advanced Model Management</span>
+                </a>
               </div>
             </div>
 
@@ -546,6 +599,69 @@ export const Settings: React.FC = () => {
                   />
                 </div>
 
+                {/* Performance Metrics */}
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium text-gray-300 mb-3">Performance Metrics (Optional)</h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <input 
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      className="bg-gray-700/80 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400" 
+                      placeholder="Accuracy (0.0-1.0)" 
+                      value={meta.accuracy} 
+                      onChange={(e) => setMeta({ ...meta, accuracy: e.target.value })} 
+                    />
+                    <input 
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      className="bg-gray-700/80 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400" 
+                      placeholder="Precision (0.0-1.0)" 
+                      value={meta.precision_score} 
+                      onChange={(e) => setMeta({ ...meta, precision_score: e.target.value })} 
+                    />
+                    <input 
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      className="bg-gray-700/80 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400" 
+                      placeholder="Recall (0.0-1.0)" 
+                      value={meta.recall_score} 
+                      onChange={(e) => setMeta({ ...meta, recall_score: e.target.value })} 
+                    />
+                    <input 
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      max="1"
+                      className="bg-gray-700/80 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400" 
+                      placeholder="F1 Score (0.0-1.0)" 
+                      value={meta.f1_score} 
+                      onChange={(e) => setMeta({ ...meta, f1_score: e.target.value })} 
+                    />
+                    <input 
+                      type="number"
+                      min="0"
+                      className="bg-gray-700/80 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400" 
+                      placeholder="Training samples" 
+                      value={meta.training_samples} 
+                      onChange={(e) => setMeta({ ...meta, training_samples: e.target.value })} 
+                    />
+                    <input 
+                      type="number"
+                      min="0"
+                      className="bg-gray-700/80 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-purple-400 focus:ring-1 focus:ring-purple-400" 
+                      placeholder="Test samples" 
+                      value={meta.test_samples} 
+                      onChange={(e) => setMeta({ ...meta, test_samples: e.target.value })} 
+                    />
+                  </div>
+                </div>
+
                 {/* File Upload Area */}
                 <div 
                   className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
@@ -574,10 +690,10 @@ export const Settings: React.FC = () => {
                     <div>
                       <Upload className="h-8 w-8 text-gray-400 mx-auto mb-2" />
                       <p className="text-gray-300 mb-1">Drag and drop your model file here</p>
-                      <p className="text-sm text-gray-400 mb-3">or click to browse (.pkl, .h5 files supported)</p>
+                      <p className="text-sm text-gray-400 mb-3">or click to browse (.pkl, .h5, .joblib files supported)</p>
                       <input 
                         type="file" 
-                        accept=".pkl,.h5" 
+                        accept=".pkl,.h5,.joblib" 
                         onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} 
                         className="hidden" 
                         id="fileInput"
@@ -655,15 +771,59 @@ export const Settings: React.FC = () => {
                           </div>
                           <div>
                             <span className="text-gray-500">Accuracy</span>
-                            <p className={`font-medium ${getAccuracyColor(model.accuracy)}`}>
-                              {model.accuracy ? `${model.accuracy}%` : 'N/A'}
+                            <p className={`font-medium ${getAccuracyColor(model.accuracy ? model.accuracy * 100 : 0)}`}>
+                              {model.accuracy ? `${(model.accuracy * 100).toFixed(1)}%` : 'N/A'}
                             </p>
                           </div>
                         </div>
+                        
+                        {/* Additional Performance Metrics */}
+                        {(model.accuracy || model.precision_score || model.recall_score || model.f1_score) && (
+                          <div className="mt-3 pt-3 border-t border-gray-700">
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                              {model.precision_score && (
+                                <div>
+                                  <span className="text-gray-500">Precision</span>
+                                  <p className="text-white font-medium">{(model.precision_score * 100).toFixed(1)}%</p>
+                                </div>
+                              )}
+                              {model.recall_score && (
+                                <div>
+                                  <span className="text-gray-500">Recall</span>
+                                  <p className="text-white font-medium">{(model.recall_score * 100).toFixed(1)}%</p>
+                                </div>
+                              )}
+                              {model.f1_score && (
+                                <div>
+                                  <span className="text-gray-500">F1 Score</span>
+                                  <p className="text-white font-medium">{(model.f1_score * 100).toFixed(1)}%</p>
+                                </div>
+                              )}
+                              {(model.training_samples || model.test_samples) && (
+                                <div>
+                                  <span className="text-gray-500">Samples</span>
+                                  <p className="text-white font-medium">
+                                    {model.training_samples ? `${model.training_samples} train` : ''}
+                                    {model.training_samples && model.test_samples ? ' / ' : ''}
+                                    {model.test_samples ? `${model.test_samples} test` : ''}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                       
                       <div className="flex items-center space-x-2 ml-4">
-                        {!model.is_active && (
+                        {model.is_active ? (
+                          <button 
+                            onClick={() => deactivateModel(model.id)}
+                            className="flex items-center space-x-1 bg-orange-600 hover:bg-orange-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                          >
+                            <XCircle className="h-3 w-3" />
+                            <span>Deactivate</span>
+                          </button>
+                        ) : (
                           <button 
                             onClick={() => activateModel(model.id)}
                             className="flex items-center space-x-1 bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition-colors"

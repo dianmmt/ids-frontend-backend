@@ -1,5 +1,10 @@
 {
   "dependencies": {
-    "axios": "^1.11.0"
+    "axios": "^1.11.0",
+    "html2canvas": "^1.4.1",
+    "recharts": "^3.1.2"
+  },
+  "devDependencies": {
+    "@types/recharts": "^2.0.1"
   }
 }

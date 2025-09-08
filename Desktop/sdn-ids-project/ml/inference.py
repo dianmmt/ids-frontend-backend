@@ -1,222 +1,241 @@
+#!/usr/bin/env python3
+"""
+ML Inference Module
+Handles model loading and prediction for various ML frameworks
+"""
+
 import os
-import io
+import pickle
 import joblib
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Tuple
-
-try:
-    # Optional: TensorFlow for .h5 models
-    import tensorflow as tf  # noqa: F401
-    from tensorflow import keras
-except Exception:
-    keras = None
+from typing import Any, Dict, Tuple, Optional
+import json
 
 def preprocess_input(X, scaler):
-    """
-    Preprocess input data: kiểm tra infinite values và scale.
-    Args:
-        X: numpy array hoặc DataFrame, shape (n_samples, n_features)
-        scaler: StandardScaler đã load
-    Returns:
-        X_scaled: Dữ liệu đã scale, sẵn sàng cho predict
-    """
-    # Nếu input là DataFrame, chuyển sang numpy
-    if isinstance(X, pd.DataFrame):
-        X = X.values.astype('float32')
-    else:
-        X = np.array(X, dtype='float32')
-
-    # Kiểm tra và loại bỏ infinite values
-    finite_mask = ~np.isinf(X).any(axis=1)
-    if not np.all(finite_mask):
-        print(f"Warning: {np.sum(~finite_mask)} samples with infinite values were removed.")
-        X = X[finite_mask]
-
-    # Scale dữ liệu (if scaler provided)
+    """Preprocess input data with scaler if available"""
     if scaler is not None:
-        X = scaler.transform(X)
+        try:
+            return scaler.transform(X)
+        except Exception as e:
+            print(f"Warning: Scaler failed, using raw features: {e}")
+            return X
     return X
 
 def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
-    """
-    Load model and preprocessing artifacts from a folder.
-    Supports:
-      - scikit-learn (.pkl/.joblib for model, scaler, label_encoder)
-      - Keras .h5 models
-    Returns: (model, context) where context may include scaler, label_encoder, metadata
-    """
-    folder = os.path.abspath(folder_path or '.')
-    context: Dict[str, Any] = {
-        'folder': folder,
-        'scaler': None,
-        'label_encoder': None,
-        'framework': None
-    }
-
-    # Prefer Keras H5 if exists
-    h5_candidates = [
-        os.path.join(folder, 'model.h5'),
-        os.path.join(folder, 'keras_model.h5')
-    ]
-    for h5 in h5_candidates:
-        if os.path.exists(h5):
-            if keras is None:
-                raise RuntimeError('TensorFlow/Keras not available for .h5 model')
-            model = keras.models.load_model(h5)
-            context['framework'] = 'tensorflow'
-            # optional scaler/encoder
-            scaler_path = os.path.join(folder, 'scaler.joblib')
-            if os.path.exists(scaler_path):
-                context['scaler'] = joblib.load(scaler_path)
-            label_path = os.path.join(folder, 'label_encoder.joblib')
-            if os.path.exists(label_path):
-                context['label_encoder'] = joblib.load(label_path)
-            return model, context
-
-    # Fallback to scikit-learn model
-    skl_candidates = [
-        os.path.join(folder, 'model.pkl'),
-        os.path.join(folder, 'random_forest_model.joblib'),
-        os.path.join(folder, 'model.joblib')
-    ]
+    """Load model and preprocessing artifacts from folder"""
     model_obj = None
-    for p in skl_candidates:
-        if os.path.exists(p):
-            if p.endswith('.pkl'):
-                model_obj = joblib.load(p)
-            else:
-                model_obj = joblib.load(p)
-            context['framework'] = 'scikit-learn'
-            break
-
+    scaler = None
+    label_encoder = None
+    framework = 'unknown'
+    
+    # Try to load different model formats
+    model_files = {
+        'pkl': 'model.pkl',
+        'joblib': 'model.joblib',
+        'h5': 'model.h5',
+        'pkl_alt': 'sdn_ids_model.pkl',
+        'joblib_alt': 'random_forest_model.joblib'
+    }
+    
+    # Try to load model
+    for fmt, filename in model_files.items():
+        model_path = os.path.join(folder_path, filename)
+        if os.path.exists(model_path):
+            try:
+                if fmt in ['pkl', 'pkl_alt']:
+                    with open(model_path, 'rb') as f:
+                        model_obj = pickle.load(f)
+                    framework = 'scikit-learn'
+                elif fmt in ['joblib', 'joblib_alt']:
+                    model_obj = joblib.load(model_path)
+                    framework = 'scikit-learn'
+                elif fmt == 'h5':
+                    import tensorflow as tf
+                    from tensorflow import keras
+                    model_obj = keras.models.load_model(model_path)
+                    framework = 'tensorflow'
+                
+                print(f"✅ Model loaded from {model_path} ({framework})")
+                break
+            except Exception as e:
+                print(f"❌ Failed to load {model_path}: {e}")
+                continue
+    
     if model_obj is None:
-        raise FileNotFoundError('No supported model file found in folder')
-
-    scaler_path = os.path.join(folder, 'scaler.joblib')
-    if os.path.exists(scaler_path):
-        context['scaler'] = joblib.load(scaler_path)
-    label_path = os.path.join(folder, 'label_encoder.joblib')
-    if os.path.exists(label_path):
-        context['label_encoder'] = joblib.load(label_path)
-
+        raise FileNotFoundError("No valid model file found in folder")
+    
+    # Try to load scaler
+    scaler_files = ['scaler.pkl', 'scaler.joblib']
+    for scaler_file in scaler_files:
+        scaler_path = os.path.join(folder_path, scaler_file)
+        if os.path.exists(scaler_path):
+            try:
+                if scaler_file.endswith('.pkl'):
+                    with open(scaler_path, 'rb') as f:
+                        scaler = pickle.load(f)
+                else:
+                    scaler = joblib.load(scaler_path)
+                print(f"✅ Scaler loaded from {scaler_path}")
+                break
+            except Exception as e:
+                print(f"❌ Failed to load scaler {scaler_path}: {e}")
+    
+    # Try to load label encoder
+    encoder_files = ['label_encoder.pkl', 'label_encoder.joblib']
+    for encoder_file in encoder_files:
+        encoder_path = os.path.join(folder_path, encoder_file)
+        if os.path.exists(encoder_path):
+            try:
+                if encoder_file.endswith('.pkl'):
+                    with open(encoder_path, 'rb') as f:
+                        label_encoder = pickle.load(f)
+                else:
+                    label_encoder = joblib.load(encoder_path)
+                print(f"✅ Label encoder loaded from {encoder_path}")
+                break
+            except Exception as e:
+                print(f"❌ Failed to load label encoder {encoder_path}: {e}")
+    
+    # Load metadata if available
+    metadata_path = os.path.join(folder_path, 'metadata.json')
+    metadata = {}
+    if os.path.exists(metadata_path):
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+        except Exception as e:
+            print(f"❌ Failed to load metadata: {e}")
+    
+    context = {
+        'model': model_obj,
+        'scaler': scaler,
+        'label_encoder': label_encoder,
+        'framework': framework,
+        'folder': folder_path,
+        'metadata': metadata
+    }
+    
     return model_obj, context
 
 def predict(X, model, label_encoder):
-    """
-    Dự đoán class cho input mới.
-    Args:
-        X: numpy array hoặc DataFrame, shape (n_samples, n_features)
-        model: RandomForestClassifier đã load
-        label_encoder: LabelEncoder đã load
-    Returns:
-        predictions: List các class names
-    """
-    # Backward-compatible default loaders (if not provided externally)
-    scaler = None
-    if os.path.exists('scaler.joblib'):
-        scaler = joblib.load('scaler.joblib')
-    if model is None:
-        # Try to find a model alongside
-        if os.path.exists('random_forest_model.joblib'):
-            model = joblib.load('random_forest_model.joblib')
-        elif os.path.exists('model.pkl'):
-            model = joblib.load('model.pkl')
-        elif os.path.exists('model.h5') and keras is not None:
-            model = keras.models.load_model('model.h5')
-    if label_encoder is None and os.path.exists('label_encoder.joblib'):
-        label_encoder = joblib.load('label_encoder.joblib')
-
-    # Preprocess input
-    X_scaled = preprocess_input(X, scaler)
-
-    # Dự đoán
-    # Predict across frameworks
-    if hasattr(model, 'predict'):
-        y_pred = model.predict(X_scaled)
-    else:
-        raise RuntimeError('Loaded model has no predict method')
-
-    # If probabilistic outputs, choose class indices
-    if isinstance(y_pred, np.ndarray) and y_pred.ndim > 1 and y_pred.shape[1] > 1:
-        y_idx = np.argmax(y_pred, axis=1)
-    else:
-        y_idx = y_pred
-
-    # Map to class names if encoder available
-    if label_encoder is not None:
-        try:
-            y_classes = label_encoder.inverse_transform(y_idx)
-            return y_classes
-        except Exception:
-            pass
-    return y_idx
+    """Make prediction with model and label encoder"""
+    try:
+        # Get prediction
+        if hasattr(model, 'predict'):
+            prediction = model.predict(X)
+        else:
+            # For models without predict method, try to call directly
+            prediction = model(X)
+        
+        # Convert to numpy array if needed
+        if hasattr(prediction, 'numpy'):
+            prediction = prediction.numpy()
+        
+        prediction = np.array(prediction)
+        
+        # Handle single prediction
+        if prediction.ndim > 1:
+            prediction = prediction.flatten()
+        
+        # Apply label encoder if available
+        if label_encoder is not None:
+            try:
+                # Handle both single and multiple predictions
+                if len(prediction.shape) == 0 or prediction.shape[0] == 1:
+                    # Single prediction
+                    pred_value = prediction[0] if prediction.shape[0] == 1 else prediction
+                    if isinstance(pred_value, (np.integer, int)):
+                        prediction = label_encoder.inverse_transform([pred_value])[0]
+                    else:
+                        prediction = str(pred_value)
+                else:
+                    # Multiple predictions
+                    prediction = label_encoder.inverse_transform(prediction)
+            except Exception as e:
+                print(f"Warning: Label encoder failed: {e}")
+                prediction = str(prediction[0]) if len(prediction) > 0 else 'unknown'
+        else:
+            # Convert to string if no label encoder
+            prediction = str(prediction[0]) if len(prediction) > 0 else 'unknown'
+        
+        return prediction
+        
+    except Exception as e:
+        print(f"Error in prediction: {e}")
+        return 'unknown'
 
 def predict_threat(features: Dict[str, float], model) -> Dict[str, Any]:
-    """
-    Predict threat-level output for a single flow features dict.
-    Returns standard keys used by the backend.
-    """
-    # Simple example mapping; customize as needed
-    feature_values = np.array([[
-        features.get('packet_count', 0),
-        features.get('byte_count', 0),
-        features.get('duration', 0),
-        features.get('packets_per_second', 0),
-        features.get('bytes_per_second', 0),
-        features.get('avg_packet_size', 0),
-        features.get('protocol_num', 0),
-        features.get('src_port', 0),
-        features.get('dst_port', 0),
-    ]], dtype='float32')
-
-    # Attempt default scaler load
-    scaler = joblib.load('scaler.joblib') if os.path.exists('scaler.joblib') else None
-    X = preprocess_input(feature_values, scaler)
-
-    # Predict
-    if hasattr(model, 'predict_proba'):
-        proba = model.predict_proba(X)
-        if isinstance(proba, list):
-            proba = np.array(proba)
-        if proba.ndim == 2 and proba.shape[1] > 1:
-            conf = float(np.max(proba))
+    """Predict threat for given features"""
+    try:
+        # Convert features to array
+        feature_array = np.array(list(features.values())).reshape(1, -1)
+        
+        # Handle infinite values
+        feature_array = np.nan_to_num(feature_array, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Get prediction
+        prediction = model.predict(feature_array)[0]
+        
+        # Get confidence if available
+        confidence = 0.0
+        if hasattr(model, 'predict_proba'):
+            try:
+                probabilities = model.predict_proba(feature_array)[0]
+                confidence = float(np.max(probabilities))
+            except Exception as e:
+                print(f"Warning: Could not get probabilities: {e}")
+        
+        # Determine if it's malicious
+        is_malicious = False
+        if isinstance(prediction, str):
+            is_malicious = prediction.lower() not in ['normal', 'benign', 'legitimate']
+        elif isinstance(prediction, (int, float)):
+            # For binary classification, assume 1 is malicious
+            is_malicious = prediction == 1
         else:
-            conf = float(proba.squeeze().mean())
-    else:
-        # For Keras/others
-        try:
-            raw = model.predict(X)
-            conf = float(np.max(raw)) if isinstance(raw, np.ndarray) else 0.5
-        except Exception:
-            conf = 0.5
-
-    # Placeholder logic for classification outcome
-    pred = None
-    try:
-        pred = model.predict(X)
-        if isinstance(pred, np.ndarray) and pred.ndim > 1:
-            pred = np.argmax(pred, axis=1)
-        if isinstance(pred, np.ndarray):
-            pred = pred.squeeze().item() if pred.size == 1 else int(pred[0])
-    except Exception:
-        pred = 0
-
-    is_malicious = bool(pred == 1)
-    return {
-        'prediction': 'malicious' if is_malicious else 'benign',
-        'confidence': conf,
-        'is_malicious': is_malicious,
-        'attack_type': 'anomaly' if is_malicious else 'benign',
-        'inference_time': 0
-    }
-
-if __name__ == "__main__":
-    # Example usage
-    example_folder = os.getenv('MODEL_FOLDER', '.')
-    try:
-        mdl, ctx = load_model_from_folder(example_folder)
-        X_new = np.random.randn(5, 8).astype('float32')
-        print('Predict demo:', predict(X_new, mdl, ctx.get('label_encoder')))
+            is_malicious = str(prediction).lower() not in ['normal', 'benign', 'legitimate']
+        
+        return {
+            'prediction': str(prediction),
+            'is_malicious': is_malicious,
+            'confidence': confidence
+        }
+        
     except Exception as e:
-        print('Load/predict demo failed:', e)
+        print(f"Error in threat prediction: {e}")
+        return {
+            'prediction': 'unknown',
+            'is_malicious': False,
+            'confidence': 0.0
+        }
+
+def main():
+    """Test the inference module"""
+    try:
+        # Test loading model
+        model_folder = os.getenv('MODEL_FOLDER', '.')
+        model, context = load_model_from_folder(model_folder)
+        
+        print(f"Model loaded: {type(model).__name__}")
+        print(f"Framework: {context['framework']}")
+        print(f"Has scaler: {context['scaler'] is not None}")
+        print(f"Has label encoder: {context['label_encoder'] is not None}")
+        
+        # Test prediction
+        test_features = {
+            'flow_duration': 10.5,
+            'total_fwd_packets': 100,
+            'total_backward_packets': 50,
+            'total_length_of_fwd_packets': 50000,
+            'total_length_of_bwd_packets': 25000
+        }
+        
+        result = predict_threat(test_features, model)
+        print(f"Test prediction: {result}")
+        
+    except Exception as e:
+        print(f"Error in main: {e}")
+
+if __name__ == '__main__':
+    main()

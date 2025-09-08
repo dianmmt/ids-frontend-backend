@@ -21,12 +21,13 @@ interface SidebarProps {
   onClose: () => void;
   onLogout: () => void;
   currentUser: User | null;
+  attackCount?: number;
 }
 
-const navigationItems = [
+const getNavigationItems = (attackCount?: number) => [
   { id: 'dashboard', icon: Home, label: 'Dashboard', badge: null },
   { id: 'topology', icon: Network, label: 'Network Topology', badge: null },
-  { id: 'attacks', icon: AlertTriangle, label: 'Attack Detection', badge: '24' },
+  { id: 'attacks', icon: AlertTriangle, label: 'Attack Detection', badge: attackCount !== undefined ? attackCount.toString() : null },
   { id: 'analytics', icon: Activity, label: 'Flow Analysis', badge: null },
   { id: 'performance', icon: BarChart3, label: 'Perfomance', badge: null },
   { id: 'users', icon: Users, label: 'User Management', badge: null, adminOnly: true },
@@ -39,10 +40,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   onClose,
   onLogout,
-  currentUser
+  currentUser,
+  attackCount
 }) => {
   const cn = (...classes: string[]) => classes.filter(Boolean).join(' ');
 
+  const navigationItems = getNavigationItems(attackCount);
   const visibleNavItems = navigationItems.filter(item => !item.adminOnly || currentUser?.role === 'admin');
 
   const [lastLogin, setLastLogin] = useState<string | null>(null);

@@ -9,8 +9,16 @@ import rateLimit from 'express-rate-limit';
 import authRoutes from './routes/auth.js';
 import performanceRoutes from './routes/performance.js';
 import mlRoutes from './routes/ml.js';
+import attacksRoutes from './routes/attacks.js';
+import topologyRoutes from './routes/topology.js';
+import dashboardRoutes from './routes/dashboard.js';
+import cicflowmeterRoutes from './routes/cicflowmeter.js';
+import pipelineRoutes from './routes/pipeline.js';
+import ipAnalyzerRoutes from './routes/ip-analyzer.js';
+import modelManagementRoutes from './routes/model-management.js';
 import { initializeDatabase, closeDatabase } from './services/database.js';
 import performanceScheduler from './services/performanceScheduler.js';
+import ServiceOrchestrator from './services/serviceOrchestrator.js';
 import config from './services/config.js';
 
 dotenv.config();
@@ -25,6 +33,9 @@ const io = new Server(server, {
 });
 const pool = new Pool(config.database);
 const PORT = config.server.port || process.env.PORT || 3001;
+
+// Initialize service orchestrator
+const serviceOrchestrator = new ServiceOrchestrator();
 
 // Security middleware
 app.use(helmet({
@@ -74,121 +85,14 @@ pool.connect()
 app.use('/api/auth', authRoutes);
 app.use('/api/performance', performanceRoutes);
 app.use('/api/ml', mlRoutes);
+app.use('/api/attacks', attacksRoutes);
+app.use('/api/topology', topologyRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/cicflowmeter', cicflowmeterRoutes);
+app.use('/api/pipeline', pipelineRoutes);
+app.use('/api/ip-analyzer', ipAnalyzerRoutes);
+app.use('/api/models', modelManagementRoutes);
 
-// Dashboard API
-app.get('/api/dashboard/summary', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT get_dashboard_summary()');
-    res.json(result.rows[0].get_dashboard_summary);
-  } catch (error) {
-    console.error('Dashboard summary error:', error);
-    res.status(500).json({ error: 'Failed to fetch dashboard summary' });
-  }
-});
-
-// Attack Detection API
-app.get('/api/attacks', async (req, res) => {
-  try {
-    const { severity, search, limit = 20, offset = 0 } = req.query;
-    
-    let query = `
-      SELECT 
-        ae.id,
-        ae.event_id,
-        ae.attack_type,
-        ae.severity,
-        ae.status,
-        ae.confidence,
-        ae.source_ip,
-        ae.destination_ip,
-        ae.source_port,
-        ae.destination_port,
-        ae.protocol,
-        ae.packet_count,
-        ae.byte_count,
-        ae.detected_at,
-        ae.is_confirmed,
-        ae.analyst_notes,
-        u.username as confirmed_by_name,
-        nn.label as affected_switch_name
-      FROM attack_events ae
-      LEFT JOIN users u ON ae.confirmed_by = u.id
-      LEFT JOIN network_nodes nn ON ae.affected_switch = nn.node_id
-      WHERE ae.detected_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
-    `;
-    
-    const params = [];
-    let paramIndex = 1;
-
-    if (severity && severity !== 'all') {
-      query += ` AND ae.severity = $${paramIndex}`;
-      params.push(severity);
-      paramIndex++;
-    }
-
-    if (search) {
-      query += ` AND (ae.attack_type ILIKE $${paramIndex} OR ae.source_ip::text ILIKE $${paramIndex})`;
-      params.push(`%${search}%`);
-      paramIndex++;
-    }
-
-    query += ` ORDER BY ae.detected_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
-    params.push(parseInt(limit), parseInt(offset));
-
-    const result = await pool.query(query, params);
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Attack fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch attacks' });
-  }
-});
-
-// Network Topology API
-app.get('/api/topology', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        nn.node_id,
-        nn.node_type,
-        nn.label,
-        nn.ip_address,
-        nn.status,
-        nn.position_x,
-        nn.position_y,
-        nn.port_count,
-        nn.active_flows,
-        nn.cpu_usage,
-        nn.memory_usage,
-        nn.last_seen,
-        COALESCE(recent_attacks.attack_count, 0) as recent_attacks
-      FROM network_nodes nn
-      LEFT JOIN (
-        SELECT 
-          affected_switch,
-          COUNT(*) as attack_count
-        FROM attack_events
-        WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour'
-          AND affected_switch IS NOT NULL
-        GROUP BY affected_switch
-      ) recent_attacks ON nn.node_id = recent_attacks.affected_switch
-      ORDER BY nn.node_type, nn.node_id
-    `);
-    
-    const switches = result.rows.filter(node => node.node_type === 'switch');
-    const hosts = result.rows.filter(node => node.node_type === 'host');
-    const controllers = result.rows.filter(node => node.node_type === 'controller');
-    
-    res.json({
-      switches: switches,
-      hosts: hosts,
-      controllers: controllers,
-      links: [] // Would be populated from actual SDN controller
-    });
-  } catch (error) {
-    console.error('Topology fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch topology' });
-  }
-});
 
 // Admin: counts of performance-related tables (quick ingestion check)
 app.get('/api/admin/performance/counts', async (req, res) => {
@@ -255,42 +159,7 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-// System Settings API
-app.get('/api/settings', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        category,
-        setting_key,
-        setting_value,
-        description,
-        updated_at
-      FROM system_settings
-      ORDER BY category, setting_key
-    `);
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Settings fetch error:', error);
-    res.status(500).json({ error: 'Failed to fetch settings' });
-  }
-});
-
-app.put('/api/settings/:key', async (req, res) => {
-  try {
-    const { key } = req.params;
-    const { value } = req.body;
-    
-    await pool.query(
-      'UPDATE system_settings SET setting_value = $1, updated_at = CURRENT_TIMESTAMP WHERE setting_key = $2',
-      [JSON.stringify(value), key]
-    );
-    
-    res.json({ success: true, message: 'Setting updated successfully' });
-  } catch (error) {
-    console.error('Settings update error:', error);
-    res.status(500).json({ error: 'Failed to update setting' });
-  }
-});
+// Removed system settings routes (table not part of consolidated schema)
 
 // WebSocket for real-time updates
 io.on('connection', (socket) => {
@@ -332,8 +201,42 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     database: 'connected',
-    scheduler: performanceScheduler.getStatus()
+    scheduler: performanceScheduler.getStatus(),
+    services: serviceOrchestrator.getStatus()
   });
+});
+
+// Service orchestrator endpoints
+app.get('/api/services/status', (req, res) => {
+  res.json(serviceOrchestrator.getStatus());
+});
+
+app.get('/api/services/stats', async (req, res) => {
+  try {
+    const stats = await serviceOrchestrator.getComprehensiveStats();
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/services/process-now', async (req, res) => {
+  try {
+    await serviceOrchestrator.triggerProcessing();
+    res.json({ success: true, message: 'Processing triggered' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/services/restart/:serviceName', async (req, res) => {
+  try {
+    const { serviceName } = req.params;
+    await serviceOrchestrator.restartService(serviceName);
+    res.json({ success: true, message: `Service ${serviceName} restarted` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Error handling middleware
@@ -375,12 +278,18 @@ async function startServer() {
     performanceScheduler.start();
     console.log('✓ Performance monitoring scheduler started');
     
+    // Start service orchestrator (CICFlowMeter pipeline)
+    await serviceOrchestrator.start();
+    console.log('✓ Service orchestrator started');
+    
     // Graceful shutdown handling
     const gracefulShutdown = async (signal) => {
       console.log(`\nReceived ${signal}, shutting down gracefully...`);
       server.close(() => console.log('✓ HTTP server closed'));
       performanceScheduler.stop();
       console.log('✓ Performance scheduler stopped');
+      await serviceOrchestrator.stop();
+      console.log('✓ Service orchestrator stopped');
       await closeDatabase();
       console.log('✓ Database connections closed');
       console.log('Graceful shutdown completed');
