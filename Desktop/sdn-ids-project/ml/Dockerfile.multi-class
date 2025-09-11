@@ -34,3 +34,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Run the multi-class inference service
 CMD ["python", "multi_class_inference_service.py"]
+
+

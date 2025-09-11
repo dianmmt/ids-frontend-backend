@@ -3,6 +3,7 @@ import { verifyToken } from '../services/authService.js';
 import { listModels, uploadModel, setActiveModel, setInactiveModel, deleteModel, downloadModel } from '../services/modelRegistryService.js';
 import axios from 'axios';
 import config from '../services/config.js';
+import { MLPredictor } from '../services/mlPredictor.js';
 
 const router = express.Router();
 
@@ -21,6 +22,34 @@ function requireAdmin(req, res, next) {
   if (req.user?.role !== 'admin') return res.status(403).json({ success: false, message: 'Admin access required' });
   next();
 }
+
+// POST /api/ml/predict - test prediction using active/selected model
+router.post('/predict', authenticateToken, async (req, res) => {
+  try {
+    const userIdHeader = req.headers['x-user-id'];
+    const selectionType = req.headers['x-model-selection-type'] || 'primary';
+
+    // Instantiate predictor with optional user context (used by dynamic inference service)
+    const predictor = new MLPredictor(userIdHeader || req.user?.id || null);
+
+    const input = req.body || {};
+    const prediction = await predictor.predictAttack(input, selectionType);
+
+    // Map to frontend-expected shape
+    return res.json({
+      is_malicious: !!prediction.isAttack,
+      prediction: prediction.isAttack ? 'attack' : 'normal',
+      attack_type: prediction.attackType || 'unknown',
+      severity: prediction.severity || 'low',
+      confidence: typeof prediction.confidence === 'number' ? prediction.confidence : 0,
+      inference_time: prediction.inferenceTime || 0,
+      probabilities: prediction.probabilities || {}
+    });
+  } catch (e) {
+    console.error('ML predict error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to connect to ML service', error: e.message });
+  }
+});
 
 // GET /api/ml/models - list models
 router.get('/models', authenticateToken, requireAdmin, async (req, res) => {

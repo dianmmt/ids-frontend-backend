@@ -503,6 +503,103 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// GET /api/attacks/recent-events - Get recent security events for dashboard
+router.get('/recent-events', async (req, res) => {
+  try {
+    const { limit = 10 } = req.query;
+    
+    const result = await pool.query(`
+      SELECT 
+        ad.detection_id,
+        ad.attack_type,
+        ad.severity,
+        ad.confidence_score,
+        ad.source_ip,
+        ad.destination_ip,
+        ad.source_port,
+        ad.destination_port,
+        ad.protocol,
+        ad.detected_at,
+        ad.false_positive
+      FROM attack_detections ad
+      WHERE ad.detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+        AND ad.false_positive = false
+      ORDER BY ad.detected_at DESC
+      LIMIT $1
+    `, [parseInt(limit)]);
+
+    // Format events for dashboard display
+    const events = result.rows.map(attack => {
+      const timeAgo = getTimeAgo(attack.detected_at);
+      const attackName = formatAttackName(attack.attack_type);
+      const ipInfo = formatIPInfo(attack.source_ip, attack.destination_ip);
+      
+      return {
+        id: attack.detection_id,
+        time: timeAgo,
+        event: `${attackName} from ${ipInfo}`,
+        severity: attack.severity,
+        attack_type: attack.attack_type,
+        source_ip: attack.source_ip,
+        destination_ip: attack.destination_ip,
+        confidence: attack.confidence_score,
+        status: 'detected', // Default status since column doesn't exist
+        detected_at: attack.detected_at
+      };
+    });
+
+    res.json(events);
+  } catch (error) {
+    console.error('Error fetching recent events:', error);
+    res.status(500).json({ error: 'Failed to fetch recent security events' });
+  }
+});
+
+// Helper function to calculate time ago
+function getTimeAgo(timestamp) {
+  const now = new Date();
+  const past = new Date(timestamp);
+  const diffMs = now - past;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins} min ago`;
+  if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+  return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+}
+
+// Helper function to format attack name
+function formatAttackName(attackType) {
+  const attackNames = {
+    'DDoS': 'DDoS Attack',
+    'Port Scan': 'Port Scan',
+    'Brute Force': 'Brute Force Attack',
+    'SQL Injection': 'SQL Injection',
+    'XSS': 'Cross-Site Scripting',
+    'Malware': 'Malware Detection',
+    'Botnet': 'Botnet Activity',
+    'Phishing': 'Phishing Attempt',
+    'Intrusion': 'Intrusion Attempt',
+    'Anomaly': 'Network Anomaly'
+  };
+  
+  return attackNames[attackType] || attackType || 'Unknown Attack';
+}
+
+// Helper function to format IP information
+function formatIPInfo(sourceIP, destinationIP) {
+  if (sourceIP && destinationIP) {
+    return `${sourceIP} → ${destinationIP}`;
+  } else if (sourceIP) {
+    return sourceIP;
+  } else if (destinationIP) {
+    return destinationIP;
+  }
+  return 'Unknown IP';
+}
+
 export default router;
 
 

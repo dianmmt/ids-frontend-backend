@@ -28,7 +28,7 @@ const getNavigationItems = (attackCount?: number) => [
   { id: 'dashboard', icon: Home, label: 'Dashboard', badge: null },
   { id: 'topology', icon: Network, label: 'Network Topology', badge: null },
   { id: 'attacks', icon: AlertTriangle, label: 'Attack Detection', badge: attackCount !== undefined ? attackCount.toString() : null },
-  { id: 'analytics', icon: Activity, label: 'Flow Analysis', badge: null },
+  
   { id: 'performance', icon: BarChart3, label: 'Perfomance', badge: null },
   { id: 'users', icon: Users, label: 'User Management', badge: null, adminOnly: true },
   { id: 'settings', icon: Settings, label: 'Settings', badge: null },

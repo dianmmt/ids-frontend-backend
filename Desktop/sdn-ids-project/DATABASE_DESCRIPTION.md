@@ -344,3 +344,5 @@ Frontend → GET /api/dashboard/summary → Backend → Multiple tables (aggrega
 - Viewer: Read-only access to dashboards and reports
 
 This database design supports a comprehensive SDN-based intrusion detection system with real-time monitoring, machine learning integration, and extensive performance tracking capabilities.
+
+

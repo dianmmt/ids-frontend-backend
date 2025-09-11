@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './components/Dashboard';
@@ -11,6 +11,7 @@ import { Settings } from './components/Settings';
 import { Login } from './components/Login';
 import { Register } from './components/Register';
 import { authService, User } from './services/authService';
+import { NotificationItem } from './types/notifications';
 
 export type ViewType = 'dashboard' | 'attacks' | 'topology' | 'analytics' | 'performance' | 'users' | 'settings';
 
@@ -25,6 +26,10 @@ function App() {
   const [authError, setAuthError] = useState<string>('');
   const [authLoading, setAuthLoading] = useState(false);
   const [attackCount, setAttackCount] = useState<number>(0);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+
+  // Track notifications already surfaced to avoid duplicates across polls/streams
+  const seenNotificationIdsRef = useRef<Set<string>>(new Set());
 
   // Authentication functions
   const handleLogin = async (credentials: { username: string; password: string }) => {
@@ -77,6 +82,112 @@ function App() {
   const handleAttackCountUpdate = (count: number) => {
     setAttackCount(count);
   };
+
+  // Notifications handling
+  const addNotification = useCallback((n: NotificationItem) => {
+    setNotifications(prev => [n, ...prev]);
+  }, []);
+
+  const dismissNotification = useCallback((id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+  }, []);
+
+  const acknowledgeAllNotifications = useCallback(() => {
+    setNotifications([]);
+    console.log('All notifications acknowledged');
+  }, []);
+
+  const navigateTo = useCallback((view: ViewType) => {
+    setCurrentView(view);
+  }, []);
+
+  // Utility to add only unseen notifications
+  const addIfUnseen = useCallback((n: NotificationItem) => {
+    const seen = seenNotificationIdsRef.current;
+    if (seen.has(n.id)) return;
+    seen.add(n.id);
+    addNotification(n);
+  }, [addNotification]);
+
+  // Subscribe to attack SSE and convert to attack notifications
+  useEffect(() => {
+    // Only when authenticated
+    if (authState !== 'authenticated') return;
+
+    const es = new EventSource('/api/attacks/stream', { withCredentials: true });
+
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        // Ignore non-attack payloads like connection/heartbeat
+        if (data && data.attack_type && data.timestamp && data.id) {
+          const title = `${data.attack_type} detected`;
+          const message = `${data.source_ip || 'unknown'} → ${data.destination_ip || 'unknown'}${data.severity ? ` • ${String(data.severity).toUpperCase()}` : ''}`;
+          const notification: NotificationItem = {
+            id: `attack_${data.id}`,
+            type: 'attack',
+            title,
+            message,
+            severity: data.severity || 'medium',
+            timestamp: data.timestamp
+          };
+          addIfUnseen(notification);
+        }
+      } catch (e) {
+        // no-op for malformed events
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+    };
+
+    return () => {
+      es.close();
+    };
+  }, [authState, addIfUnseen]);
+
+  // Poll performance alerts periodically and surface as notifications
+  useEffect(() => {
+    if (authState !== 'authenticated') return;
+
+    let cancelled = false;
+
+    const fetchAlerts = async () => {
+      try {
+        const resp = await fetch('/api/performance/realtime?refresh=true&limit=5&offset=0', {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        if (!resp.ok) return;
+        const json = await resp.json();
+        const alerts = Array.isArray(json.alerts) ? json.alerts : [];
+        if (cancelled) return;
+
+        alerts.forEach((a: any) => {
+          const id = a.id || a.alert_id || `${a.component || 'perf'}_${a.timestamp || Date.now()}`;
+          // Only notify unresolved alerts
+          if (a.resolved) return;
+          const notification: NotificationItem = {
+            id: `perf_${id}`,
+            type: 'performance',
+            title: `${String(a.component || 'System')} performance alert`,
+            message: `${a.message || 'Performance issue detected'}${a.severity ? ` • ${String(a.severity).toUpperCase()}` : ''}`,
+            severity: (a.severity as any) || 'medium',
+            timestamp: a.timestamp || new Date().toISOString()
+          };
+          addIfUnseen(notification);
+        });
+      } catch (_) {
+        // ignore network errors for notifications
+      }
+    };
+
+    // Initial fetch + interval
+    fetchAlerts();
+    const interval = setInterval(fetchAlerts, 30000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [authState, addIfUnseen]);
 
   // Check authentication on app load
   useEffect(() => {
@@ -168,6 +279,10 @@ function App() {
         onMenuClick={() => setSidebarOpen(!sidebarOpen)}
         currentView={currentView}
         currentUser={currentUser}
+        notifications={notifications}
+        onDismissNotification={dismissNotification}
+        onAcknowledgeAll={acknowledgeAllNotifications}
+        onNavigate={navigateTo}
       />
       
       {/* Main Content Area */}

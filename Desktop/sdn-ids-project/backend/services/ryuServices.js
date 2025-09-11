@@ -10,14 +10,18 @@ class RyuService {
     this.wsUrl = `ws://${host}:${wsPort}/ws/controller`;
     this.ws = null;
     this.isConnected = false;
+    this.connectionStatus = 'disconnected'; // 'connected', 'disconnected', 'connecting'
     this.eventHandlers = new Map();
+    this.connectionCheckInterval = null;
   }
 
   // Connect to Ryu controller
   async connect() {
     try {
+      this.connectionStatus = 'connecting';
+      
       // Test HTTP connection
-      const response = await axios.get(`${this.baseUrl}/stats/switches`);
+      const response = await axios.get(`${this.baseUrl}/stats/switches`, { timeout: 5000 });
       console.log('Ryu HTTP API is accessible');
       
       // Connect WebSocket
@@ -26,7 +30,9 @@ class RyuService {
       this.ws.on('open', () => {
         console.log('Connected to Ryu WebSocket');
         this.isConnected = true;
+        this.connectionStatus = 'connected';
         this.subscribeToEvents();
+        this.startConnectionMonitoring();
       });
 
       this.ws.on('message', (data) => {
@@ -36,6 +42,8 @@ class RyuService {
       this.ws.on('close', () => {
         console.log('Ryu WebSocket connection closed');
         this.isConnected = false;
+        this.connectionStatus = 'disconnected';
+        this.stopConnectionMonitoring();
         // Attempt to reconnect
         setTimeout(() => this.connect(), 5000);
       });
@@ -43,11 +51,14 @@ class RyuService {
       this.ws.on('error', (error) => {
         console.error('Ryu WebSocket error:', error);
         this.isConnected = false;
+        this.connectionStatus = 'disconnected';
+        this.stopConnectionMonitoring();
       });
 
       return true;
     } catch (error) {
       console.error('Failed to connect to Ryu controller:', error.message);
+      this.connectionStatus = 'disconnected';
       return false;
     }
   }
@@ -309,12 +320,52 @@ class RyuService {
     return await this.addFlowRule(dpid, match, actions, priority);
   }
 
+  // Start connection monitoring
+  startConnectionMonitoring() {
+    this.stopConnectionMonitoring(); // Clear any existing interval
+    this.connectionCheckInterval = setInterval(async () => {
+      try {
+        // Test HTTP connection
+        await axios.get(`${this.baseUrl}/stats/switches`, { timeout: 3000 });
+        if (this.connectionStatus !== 'connected') {
+          this.connectionStatus = 'connected';
+          this.isConnected = true;
+        }
+      } catch (error) {
+        if (this.connectionStatus !== 'disconnected') {
+          this.connectionStatus = 'disconnected';
+          this.isConnected = false;
+        }
+      }
+    }, 10000); // Check every 10 seconds
+  }
+
+  // Stop connection monitoring
+  stopConnectionMonitoring() {
+    if (this.connectionCheckInterval) {
+      clearInterval(this.connectionCheckInterval);
+      this.connectionCheckInterval = null;
+    }
+  }
+
+  // Get connection status
+  getConnectionStatus() {
+    return this.connectionStatus;
+  }
+
+  // Check if connected
+  isConnectedToRyu() {
+    return this.isConnected && this.connectionStatus === 'connected';
+  }
+
   // Disconnect from Ryu
   disconnect() {
+    this.stopConnectionMonitoring();
     if (this.ws) {
       this.ws.close();
     }
     this.isConnected = false;
+    this.connectionStatus = 'disconnected';
   }
 }
 

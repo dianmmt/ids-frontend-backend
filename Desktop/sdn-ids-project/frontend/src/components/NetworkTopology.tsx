@@ -3,7 +3,6 @@ import {
   Network, 
   Server, 
   Router, 
-  Wifi,
   MonitorSpeaker,
   Activity,
   AlertCircle,
@@ -11,7 +10,7 @@ import {
   WifiOff,
   RefreshCw
 } from 'lucide-react';
-import ryuClient, { NetworkTopology as TopologyData, Switch, Flow } from '../services/ryuClient';
+import ryuClient, { NetworkTopology as TopologyData, Switch } from '../services/ryuClient';
 
 interface NetworkNode {
   id: string;
@@ -23,22 +22,15 @@ interface NetworkNode {
   connections: number;
 }
 
-interface NetworkLink {
-  id: string;
-  source: string;
-  target: string;
-  bandwidth: string;
-  utilization: number;
-  status: 'up' | 'down' | 'degraded';
-}
 
 export const NetworkTopology: React.FC = () => {
   const [nodes, setNodes] = useState<NetworkNode[]>([]);
-  const [links, setLinks] = useState<NetworkLink[]>([]);
   const [selectedNode, setSelectedNode] = useState<NetworkNode | null>(null);
-  const [topology, setTopology] = useState<TopologyData>({ switches: [], links: [], hosts: [] });
-  const [flows, setFlows] = useState<Flow[]>([]);
-  const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'connecting'>('disconnected');
+  const [ryuConnectionStatus, setRyuConnectionStatus] = useState<{ status: string; connected: boolean; message: string }>({
+    status: 'disconnected',
+    connected: false,
+    message: 'Cannot connect to Ryu'
+  });
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -47,12 +39,7 @@ export const NetworkTopology: React.FC = () => {
     
     // Set up event listeners
     ryuClient.on('topology_updated', (topologyData: TopologyData) => {
-      setTopology(topologyData);
       updateNodesFromTopology(topologyData);
-    });
-
-    ryuClient.on('flows_updated', (flowsData: Flow[]) => {
-      setFlows(flowsData);
     });
 
     ryuClient.on('switch_connected', (switchInfo: Switch) => {
@@ -66,16 +53,26 @@ export const NetworkTopology: React.FC = () => {
     // Load initial data
     loadTopologyData();
 
-    // Update connection status
-    const updateConnectionStatus = () => {
-      setConnectionStatus(ryuClient.getConnectionStatus());
+    // Update Ryu connection status
+    const updateRyuConnectionStatus = async () => {
+      try {
+        const ryuStatus = await ryuClient.getRyuConnectionStatus();
+        setRyuConnectionStatus(ryuStatus);
+      } catch (error) {
+        console.error('Error updating Ryu connection status:', error);
+        setRyuConnectionStatus({
+          status: 'disconnected',
+          connected: false,
+          message: 'Cannot connect to Ryu'
+        });
+      }
     };
 
-    updateConnectionStatus();
-    const statusInterval = setInterval(updateConnectionStatus, 2000);
+    updateRyuConnectionStatus();
+    const ryuStatusInterval = setInterval(updateRyuConnectionStatus, 5000);
 
     return () => {
-      clearInterval(statusInterval);
+      clearInterval(ryuStatusInterval);
       ryuClient.disconnect();
     };
   }, []);
@@ -86,12 +83,7 @@ export const NetworkTopology: React.FC = () => {
       
       // Load topology
       const topologyData = await ryuClient.getTopology();
-      setTopology(topologyData);
       updateNodesFromTopology(topologyData);
-      
-      // Load flows
-      const flowsData = await ryuClient.getFlows();
-      setFlows(flowsData);
       
     } catch (error) {
       console.error('Error loading topology data:', error);
@@ -108,7 +100,7 @@ export const NetworkTopology: React.FC = () => {
       id: 'controller',
       label: 'Ryu Controller',
       type: 'controller',
-      status: connectionStatus === 'connected' ? 'active' : 'inactive',
+      status: ryuConnectionStatus.connected ? 'active' : 'inactive',
       ip: 'localhost:8080',
       ports: 1,
       connections: topologyData.switches.length
@@ -143,8 +135,15 @@ export const NetworkTopology: React.FC = () => {
     setNodes(newNodes);
   };
 
-  const refreshData = () => {
-    loadTopologyData();
+  const refreshData = async () => {
+    await loadTopologyData();
+    // Also refresh Ryu connection status
+    try {
+      const ryuStatus = await ryuClient.getRyuConnectionStatus();
+      setRyuConnectionStatus(ryuStatus);
+    } catch (error) {
+      console.error('Error refreshing Ryu connection status:', error);
+    }
   };
 
   const getNodeIcon = (type: string) => {
@@ -173,18 +172,6 @@ export const NetworkTopology: React.FC = () => {
     }
   };
 
-  const getLinkColor = (status: string) => {
-    switch (status) {
-      case 'up':
-        return 'border-green-400';
-      case 'degraded':
-        return 'border-yellow-400';
-      case 'down':
-        return 'border-red-400';
-      default:
-        return 'border-gray-400';
-    }
-  };
 
   return (
     <div className="space-y-6">
@@ -192,20 +179,19 @@ export const NetworkTopology: React.FC = () => {
       <div className="flex items-center justify-between">
         <div className="flex items-center space-x-4">
           <div className={`flex items-center space-x-2 px-3 py-2 rounded-lg ${
-            connectionStatus === 'connected' ? 'bg-green-400/10 text-green-400' :
-            connectionStatus === 'connecting' ? 'bg-yellow-400/10 text-yellow-400' :
+            ryuConnectionStatus.connected ? 'bg-green-400/10 text-green-400' :
+            ryuConnectionStatus.status === 'connecting' ? 'bg-yellow-400/10 text-yellow-400' :
             'bg-red-400/10 text-red-400'
           }`}>
-            {connectionStatus === 'connected' ? (
+            {ryuConnectionStatus.connected ? (
               <CheckCircle size={16} />
-            ) : connectionStatus === 'connecting' ? (
+            ) : ryuConnectionStatus.status === 'connecting' ? (
               <RefreshCw size={16} className="animate-spin" />
             ) : (
               <WifiOff size={16} />
             )}
-            <span className="text-sm font-medium capitalize">
-              {connectionStatus === 'connected' ? 'Connected to Ryu' :
-               connectionStatus === 'connecting' ? 'Connecting...' : 'Disconnected'}
+            <span className="text-sm font-medium">
+              {ryuConnectionStatus.message}
             </span>
           </div>
           
@@ -267,10 +253,10 @@ export const NetworkTopology: React.FC = () => {
 
         <div className="bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
           <div className="flex items-center space-x-3">
-            <Network className="text-cyan-400" size={24} />
+            <Activity className="text-cyan-400" size={24} />
             <div>
-              <h3 className="text-2xl font-bold text-white">{links.length}</h3>
-              <p className="text-cyan-400 font-medium">Links</p>
+              <h3 className="text-2xl font-bold text-white">{nodes.length}</h3>
+              <p className="text-cyan-400 font-medium">Total Nodes</p>
             </div>
           </div>
         </div>
@@ -302,7 +288,7 @@ export const NetworkTopology: React.FC = () => {
 
             {/* Switches in the middle */}
             <div className="absolute top-32 left-0 right-0 flex justify-around">
-              {nodes.filter(n => n.type === 'switch').map((node, index) => {
+              {nodes.filter(n => n.type === 'switch').map((node) => {
                 const Icon = getNodeIcon(node.type);
                 return (
                   <div 
@@ -319,7 +305,7 @@ export const NetworkTopology: React.FC = () => {
 
             {/* Hosts at the bottom */}
             <div className="absolute bottom-4 left-0 right-0 flex justify-around">
-              {nodes.filter(n => n.type === 'host').map((node, index) => {
+              {nodes.filter(n => n.type === 'host').map((node) => {
                 const Icon = getNodeIcon(node.type);
                 return (
                   <div 
@@ -413,57 +399,6 @@ export const NetworkTopology: React.FC = () => {
         </div>
       </div>
 
-      {/* Network Links Table */}
-      <div className="bg-gray-800/50 backdrop-blur-sm rounded-xl border border-gray-700">
-        <div className="p-6 border-b border-gray-700">
-          <h3 className="text-lg font-semibold text-white">Network Links</h3>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-700/50">
-              <tr>
-                <th className="text-left p-4 text-gray-300 font-medium">Source</th>
-                <th className="text-left p-4 text-gray-300 font-medium">Target</th>
-                <th className="text-left p-4 text-gray-300 font-medium">Bandwidth</th>
-                <th className="text-left p-4 text-gray-300 font-medium">Utilization</th>
-                <th className="text-left p-4 text-gray-300 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-700">
-              {links.map((link) => (
-                <tr key={link.id} className="hover:bg-gray-700/30">
-                  <td className="p-4 text-white">{link.source}</td>
-                  <td className="p-4 text-white">{link.target}</td>
-                  <td className="p-4 text-white">{link.bandwidth}</td>
-                  <td className="p-4">
-                    <div className="flex items-center space-x-2">
-                      <div className="w-16 bg-gray-700 rounded-full h-2">
-                        <div 
-                          className={`h-2 rounded-full ${
-                            link.utilization > 70 ? 'bg-red-400' : 
-                            link.utilization > 40 ? 'bg-yellow-400' : 'bg-green-400'
-                          }`}
-                          style={{ width: `${link.utilization}%` }}
-                        ></div>
-                      </div>
-                      <span className="text-white text-sm">{link.utilization}%</span>
-                    </div>
-                  </td>
-                  <td className="p-4">
-                    <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                      link.status === 'up' ? 'bg-green-400/10 text-green-400' :
-                      link.status === 'degraded' ? 'bg-yellow-400/10 text-yellow-400' :
-                      'bg-red-400/10 text-red-400'
-                    }`}>
-                      {link.status.toUpperCase()}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
   );
 };

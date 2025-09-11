@@ -119,7 +119,7 @@ export class ServiceOrchestrator {
       status.services.analyzer = {
         name: 'IP Analyzer',
         running: this.services.analyzer.isRunning,
-        stats: this.services.analyzer.getStats()
+        stats: this.services.analyzer.stats
       };
     }
     

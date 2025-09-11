@@ -12,3 +12,8 @@ CHECK (format IN ('pkl', 'h5', 'joblib'));
 
 -- Update the comment to reflect the new supported formats
 COMMENT ON COLUMN model_registry.format IS 'Model format: pkl (pickle), h5 (Keras/TensorFlow), or joblib (scikit-learn/XGBoost)';
+
+
+
+
+

@@ -313,6 +313,21 @@ class RyuClient {
     if (this.socket.connected) return 'connected';
     return 'connecting';
   }
+
+  // Check Ryu controller connection status
+  async getRyuConnectionStatus(): Promise<{ status: string; connected: boolean; message: string }> {
+    try {
+      const response = await fetch(`${this.apiBaseUrl}/api/topology/ryu-status`);
+      return await response.json();
+    } catch (error) {
+      console.error('Error checking Ryu connection status:', error);
+      return {
+        status: 'disconnected',
+        connected: false,
+        message: 'Cannot connect to Ryu'
+      };
+    }
+  }
 }
 
 // Create and export a singleton instance

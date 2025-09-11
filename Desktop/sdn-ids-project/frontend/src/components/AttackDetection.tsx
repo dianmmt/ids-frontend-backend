@@ -422,24 +422,13 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                   ))
                 )}
               </select>
-              <button
-                onClick={testSelectedModel}
-                disabled={!selectedModelId}
-                className={`flex items-center justify-center space-x-2 px-3.5 py-2 rounded-md font-medium text-xs transition-colors shadow-sm ${
-                  selectedModelId
-                    ? 'bg-green-500 hover:bg-green-600 text-white'
-                    : 'bg-gray-600 text-gray-300 cursor-not-allowed'
-                }`}
-              >
-                <Shield size={16} />
-                <span>Test Model</span>
-              </button>
+              
 
             </div>
           </div>
           <button
           onClick={handleExport}
-          className="flex items-center justify-center space-x-2 px-2 py-2 rounded-md font-medium text-xs bg-blue-500 hover:bg-blue-600 text-white shadow-sm transition-colors"
+          className="flex items-center justify-center space-x-3 px-3 py-1.5 rounded-md font-medium text-xs bg-blue-500 hover:bg-blue-600 text-white shadow-sm transition-colors"
         >
           <Download size={16} />
           <span>Export Report</span>
