@@ -69,10 +69,28 @@ router.get('/realtime', async (req, res) => {
   try {
     const shouldRefresh = req.query.refresh === 'true';
     if (shouldRefresh) {
-      await performanceServiceInstance.collectAllPerformanceData();
+      try {
+        await performanceServiceInstance.collectAllPerformanceData();
+      } catch (collectError) {
+        console.warn('Realtime refresh failed, continuing with cached/fallbacks:', collectError.message);
+      }
     }
-    const systemMetrics = await performanceServiceInstance.getLatestSystemMetrics();
-    const performanceData = await performanceServiceInstance.getLatestPerformanceData();
+    let systemMetrics = [];
+    let performanceData = {};
+
+    try {
+      systemMetrics = await performanceServiceInstance.getLatestSystemMetrics();
+    } catch (e) {
+      systemMetrics = performanceServiceInstance.getFallbackSystemMetrics();
+    }
+    try {
+      performanceData = await performanceServiceInstance.getLatestPerformanceData();
+    } catch (e) {
+      performanceData = {
+        network_statistics: performanceServiceInstance.networkStatsCache?.latest || performanceServiceInstance.getFallbackNetworkStats(),
+        system_health: performanceServiceInstance.getFallbackSystemHealth()
+      };
+    }
 
     // Alerts pagination
     const limit = parseInt(req.query.limit) || 4;
@@ -83,7 +101,7 @@ router.get('/realtime', async (req, res) => {
     res.json({
       timestamp: new Date().toISOString(),
       systemMetrics,
-      mlPerformance: performanceData.ml_performance || null,
+      mlPerformance: performanceData.ml_performance || performanceServiceInstance.getFallbackMLPerformance(),
       databasePerformance: performanceData.database_performance || null,
       networkStatistics: performanceData.network_statistics || null,
       systemHealth: performanceData.system_health || null,
@@ -91,8 +109,17 @@ router.get('/realtime', async (req, res) => {
       alertsPagination: { limit, offset, total: totalAlerts }
     });
   } catch (error) {
-    console.error('Error fetching real-time performance:', error);
-    res.status(500).json({ error: 'Failed to fetch real-time performance data' });
+    console.error('Error fetching real-time performance (serving fallbacks):', error);
+    res.json({
+      timestamp: new Date().toISOString(),
+      systemMetrics: performanceServiceInstance.getFallbackSystemMetrics(),
+      mlPerformance: performanceServiceInstance.getFallbackMLPerformance(),
+      databasePerformance: performanceServiceInstance.getFallbackDatabasePerformance(),
+      networkStatistics: performanceServiceInstance.networkStatsCache?.latest || performanceServiceInstance.getFallbackNetworkStats(),
+      systemHealth: performanceServiceInstance.getFallbackSystemHealth(),
+      alerts: [],
+      alertsPagination: { limit: 0, offset: 0, total: 0 }
+    });
   }
 });
 
@@ -119,6 +146,25 @@ router.get('/health', async (req, res) => {
   }
 });
 
+// Threshold settings endpoints
+router.get('/thresholds', (req, res) => {
+  try {
+    const thresholds = performanceServiceInstance.getAllThresholdSettings();
+    res.json({ thresholds });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch thresholds' });
+  }
+});
+
+router.post('/thresholds', (req, res) => {
+  try {
+    const updated = performanceServiceInstance.updateThresholdSettings(req.body?.thresholds || req.body || {});
+    res.json({ success: true, thresholds: updated });
+  } catch (error) {
+    res.status(400).json({ success: false, error: 'Invalid thresholds payload' });
+  }
+});
+
 // Get active performance alerts (paginated)
 router.get('/alerts', async (req, res) => {
   try {
@@ -130,6 +176,52 @@ router.get('/alerts', async (req, res) => {
   } catch (error) {
     console.error('Error fetching alerts:', error);
     res.status(500).json({ error: 'Failed to fetch alerts' });
+  }
+});
+
+// Get all performance alerts (active and resolved)
+router.get('/alerts/all', async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+    const alerts = await performanceServiceInstance.getAllAlerts(limit, offset);
+    const total = await performanceServiceInstance.getAllAlertsCount();
+    res.json({ alerts, pagination: { limit, offset, total } });
+  } catch (error) {
+    console.error('Error fetching all alerts:', error);
+    res.status(500).json({ error: 'Failed to fetch all alerts' });
+  }
+});
+
+// Acknowledge (resolve) a performance alert by id, but keep it stored in DB
+router.post('/alerts/:id/acknowledge', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const resolvedBy = req.user?.username || null; // optional if auth is wired
+    const updated = await performanceServiceInstance.resolveAlertById(id, resolvedBy);
+    if (!updated) {
+      return res.status(404).json({ error: 'Alert not found' });
+    }
+    return res.json({ success: true, alert: updated });
+  } catch (error) {
+    console.error('Error acknowledging alert:', error);
+    return res.status(500).json({ error: 'Failed to acknowledge alert' });
+  }
+});
+
+// Hide a performance alert by id (soft delete - keeps data in DB but hides from UI)
+router.post('/alerts/:id/hide', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const hiddenBy = req.user?.username || null; // optional if auth is wired
+    const updated = await performanceServiceInstance.hideAlertById(id, hiddenBy);
+    if (!updated) {
+      return res.status(404).json({ error: 'Alert not found' });
+    }
+    return res.json({ success: true, alert: updated, message: 'Alert hidden successfully' });
+  } catch (error) {
+    console.error('Error hiding alert:', error);
+    return res.status(500).json({ error: 'Failed to hide alert' });
   }
 });
 

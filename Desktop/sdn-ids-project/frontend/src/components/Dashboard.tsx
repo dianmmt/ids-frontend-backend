@@ -379,14 +379,7 @@ export const Dashboard: React.FC = () => {
           icon={Shield}
           iconColor="text-green-400"
         />
-        <MetricCard
-          title="Active Network Flows"
-          value={realtimeData.activeFlows.toLocaleString()}
-          change="-45"
-          changeType="neutral"
-          icon={Activity}
-          iconColor="text-blue-400"
-        />
+
         <MetricCard
           title="System Load"
           value={`${Math.round(realtimeData.systemLoad)}%`}
@@ -397,52 +390,8 @@ export const Dashboard: React.FC = () => {
         />
       </div>
 
-      {/* Charts and Analysis */}
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-8">
-        <div className="xl:col-span-3 bg-gray-800/50 backdrop-blur-sm rounded-2xl p-8 border border-gray-700">
-          <div className="flex items-center justify-between mb-8">
-            <h3 className="text-xl font-semibold text-white">Attack Detection Timeline</h3>
-            <div className="flex items-center space-x-2">
-              <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
-              <span className="text-sm text-green-400 font-medium">Live</span>
-            </div>
-          </div>
-          <Chart type="line" height={280} />
-        </div>
-
-        <div className="xl:col-span-2 bg-gray-800/50 backdrop-blur-sm rounded-2xl p-8 border border-gray-700">
-          <h3 className="text-xl font-semibold text-white mb-8">ML Model Performance</h3>
-          <div className="space-y-8">
-            <div>
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-gray-300 font-medium">Detection Accuracy</span>
-                <span className="text-green-400 font-bold text-lg">94.7%</span>
-              </div>
-              <div className="w-full bg-gray-700 rounded-full h-3">
-                <div className="bg-green-400 h-3 rounded-full transition-all duration-500" style={{ width: '94.7%' }}></div>
-              </div>
-            </div>
-            
-            <div>
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-gray-300 font-medium">False Positive Rate</span>
-                <span className="text-yellow-400 font-bold text-lg">2.1%</span>
-              </div>
-              <div className="w-full bg-gray-700 rounded-full h-3">
-                <div className="bg-yellow-400 h-3 rounded-full transition-all duration-500" style={{ width: '2.1%' }}></div>
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-gray-600">
-              <div className="flex justify-between items-center">
-                <span className="text-gray-300 font-medium">Processing Speed</span>
-                <span className="text-blue-400 font-bold text-lg">1,247 flows/sec</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
+    
+      
       {/* Recent Activity */}
       <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl p-8 border border-gray-700">
         <div className="flex items-center justify-between mb-8">

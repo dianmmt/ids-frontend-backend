@@ -1,9 +1,8 @@
 import express from 'express';
 import { verifyToken } from '../services/authService.js';
-import { listModels, uploadModel, setActiveModel, setInactiveModel, deleteModel, downloadModel } from '../services/modelRegistryService.js';
+// Note: model management endpoints are served under /api/models. Remove duplicates here.
 import axios from 'axios';
 import config from '../services/config.js';
-import { MLPredictor } from '../services/mlPredictor.js';
 
 const router = express.Router();
 
@@ -23,128 +22,51 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-// POST /api/ml/predict - test prediction using active/selected model
+// Duplicated model management endpoints were removed in favor of /api/models
+
+// POST /api/ml/predict - test model with sample data using user's selected model
 router.post('/predict', authenticateToken, async (req, res) => {
   try {
-    const userIdHeader = req.headers['x-user-id'];
-    const selectionType = req.headers['x-model-selection-type'] || 'primary';
-
-    // Instantiate predictor with optional user context (used by dynamic inference service)
-    const predictor = new MLPredictor(userIdHeader || req.user?.id || null);
-
-    const input = req.body || {};
-    const prediction = await predictor.predictAttack(input, selectionType);
-
-    // Map to frontend-expected shape
-    return res.json({
-      is_malicious: !!prediction.isAttack,
-      prediction: prediction.isAttack ? 'attack' : 'normal',
-      attack_type: prediction.attackType || 'unknown',
-      severity: prediction.severity || 'low',
-      confidence: typeof prediction.confidence === 'number' ? prediction.confidence : 0,
-      inference_time: prediction.inferenceTime || 0,
-      probabilities: prediction.probabilities || {}
+    const { DirectMLPredictorWithDB } = await import('../services/directMLPredictorWithDB.js');
+    
+    // Get user ID and model selection from headers
+    const userId = req.user?.id || req.headers['x-user-id'] || '1';
+    const modelSelectionType = req.headers['x-model-selection-type'];
+    
+    // Create direct ML predictor instance with database support
+    const mlPredictor = new DirectMLPredictorWithDB(userId);
+    
+    // Get the sample data from request body
+    const sampleData = req.body;
+    
+    // Make prediction using the user's selected model
+    const prediction = await mlPredictor.predictAttack(sampleData, modelSelectionType);
+    
+    // Return the prediction result in the format expected by frontend
+    res.json({
+      success: true,
+      is_malicious: prediction.isAttack,
+      prediction: prediction.attackType,
+      confidence: prediction.confidence,
+      attack_type: prediction.attackType,
+      severity: prediction.severity,
+      inference_time: prediction.inferenceTime,
+      probabilities: prediction.probabilities,
+      model_name: prediction.modelName,
+      model_id: prediction.modelId
     });
-  } catch (e) {
-    console.error('ML predict error:', e);
-    return res.status(500).json({ success: false, message: 'Failed to connect to ML service', error: e.message });
-  }
-});
-
-// GET /api/ml/models - list models
-router.get('/models', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const models = await listModels();
-    res.json({ success: true, models });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-// POST /api/ml/models - upload model (base64)
-router.post('/models', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { name, version, format, framework, description, base64Content, accuracy, precision_score, recall_score, f1_score, training_samples, test_samples } = req.body || {};
-    const model = await uploadModel({
-      name,
-      version,
-      format,
-      framework,
-      description,
-      base64Content,
-      uploadedBy: req.user?.id || null,
-      accuracy,
-      precision_score,
-      recall_score,
-      f1_score,
-      training_samples,
-      test_samples
+    
+  } catch (error) {
+    console.error('ML Prediction API Error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Failed to test model',
+      message: 'Model prediction failed'
     });
-    res.status(201).json({ success: true, model });
-  } catch (e) {
-    res.status(400).json({ success: false, message: e.message });
   }
 });
 
-// POST /api/ml/models/:id/activate - set active and push to ML service
-router.post('/models/:id/activate', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    // Mark active in DB
-    const active = await setActiveModel(id);
-    // Fetch bytes to send to ML service
-    const artifact = await downloadModel(id);
-    if (!artifact) return res.status(404).json({ success: false, message: 'Model not found' });
-
-    // Push to ML service (optional - continue even if ML service is not available)
-    const mlUrl = process.env.ML_API_URL || 'http://ml:5000';
-    try {
-      await axios.post(`${mlUrl}/model/load`, {
-        name: artifact.name,
-        version: artifact.version,
-        format: artifact.format,
-        framework: artifact.framework,
-        sha256: artifact.sha256,
-        size_bytes: artifact.size_bytes,
-        base64Content: artifact.content.toString('base64')
-      }, { timeout: 20000 });
-      
-      res.json({ success: true, model: active, message: 'Model activated and loaded into ML service' });
-    } catch (mlError) {
-      console.warn('ML service not available, model activated in database only:', mlError.message);
-      res.json({ 
-        success: true, 
-        model: active, 
-        message: 'Model activated in database (ML service not available)',
-        warning: 'ML service connection failed - model is stored but not loaded for inference'
-      });
-    }
-  } catch (e) {
-    res.status(400).json({ success: false, message: e.message });
-  }
-});
-
-// POST /api/ml/models/:id/deactivate - deactivate model
-router.post('/models/:id/deactivate', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const inactive = await setInactiveModel(id);
-    res.json({ success: true, model: inactive, message: 'Model deactivated successfully' });
-  } catch (e) {
-    res.status(400).json({ success: false, message: e.message });
-  }
-});
-
-// DELETE /api/ml/models/:id - delete model
-router.delete('/models/:id', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await deleteModel(id);
-    res.json({ success: true, ...result });
-  } catch (e) {
-    res.status(400).json({ success: false, message: e.message });
-  }
-});
+// Model management endpoints moved to /api/models
 
 export default router;
 

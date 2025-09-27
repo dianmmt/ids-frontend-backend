@@ -22,7 +22,13 @@ const config = {
   server: {
     port: process.env.PORT || 3001,
     cors: {
-      origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+      // Support comma-separated origins in CORS_ORIGIN, fallback to common dev ports
+      // Include Docker container origins and localhost variants
+      // For development, be more permissive with localhost and container origins
+      origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000,http://frontend:5173,http://sdn_ids_frontend:5173,http://127.0.0.1:3000,http://127.0.0.1:5173')
+        .split(',')
+        .map(o => o.trim())
+        .filter(Boolean),
     },
   },
 };

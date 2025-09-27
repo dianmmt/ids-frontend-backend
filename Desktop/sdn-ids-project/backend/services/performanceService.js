@@ -14,6 +14,43 @@ class PerformanceService {
       totalBytes: 0
     };
     this.platform = process.platform;
+    // In-memory cache for network statistics (live load when DB table is missing)
+    this.networkStatsCache = {
+      latest: null,
+      history: [],
+      maxHistory: 1000
+    };
+    // In-memory cache for database performance metrics
+    this.databasePerformanceCache = {
+      latest: null,
+      history: [],
+      maxHistory: 1000
+    };
+    // Dynamic alert thresholds (warning/critical) per metric name
+    this.alertThresholds = {
+      'CPU Usage': { warning: 70, critical: 85 },
+      'Memory Usage': { warning: 75, critical: 90 },
+      'Disk Usage': { warning: 80, critical: 95 },
+      'Network Load': { warning: 75, critical: 90 }
+    };
+  }
+
+  // Update in-memory cache for network statistics
+  #updateNetworkStatsCache(stats) {
+    this.networkStatsCache.latest = stats;
+    this.networkStatsCache.history.push(stats);
+    if (this.networkStatsCache.history.length > this.networkStatsCache.maxHistory) {
+      this.networkStatsCache.history.splice(0, this.networkStatsCache.history.length - this.networkStatsCache.maxHistory);
+    }
+  }
+
+  // Update in-memory cache for database performance
+  #updateDatabasePerformanceCache(snapshot) {
+    this.databasePerformanceCache.latest = snapshot;
+    this.databasePerformanceCache.history.push(snapshot);
+    if (this.databasePerformanceCache.history.length > this.databasePerformanceCache.maxHistory) {
+      this.databasePerformanceCache.history.splice(0, this.databasePerformanceCache.history.length - this.databasePerformanceCache.maxHistory);
+    }
   }
 
   // System metrics calculations and storage
@@ -37,33 +74,38 @@ class PerformanceService {
         this.calculateNetworkLoad()
       ]);
 
+      const cpuT = this.getThresholdsFor('CPU Usage');
+      const memT = this.getThresholdsFor('Memory Usage');
+      const diskT = this.getThresholdsFor('Disk Usage');
+      const netT = this.getThresholdsFor('Network Load');
+
       return [
         {
           name: 'CPU Usage',
           value: cpuUsage,
           unit: '%',
-          status: this.getMetricStatus(cpuUsage, 70, 85),
+          status: this.getMetricStatus(cpuUsage, cpuT.warning, cpuT.critical),
           trend: await this.calculateTrend('CPU Usage', cpuUsage)
         },
         {
           name: 'Memory Usage',
           value: memoryUsage,
           unit: '%',
-          status: this.getMetricStatus(memoryUsage, 75, 90),
+          status: this.getMetricStatus(memoryUsage, memT.warning, memT.critical),
           trend: await this.calculateTrend('Memory Usage', memoryUsage)
         },
         {
           name: 'Disk Usage',
           value: diskUsage,
           unit: '%',
-          status: this.getMetricStatus(diskUsage, 80, 95),
+          status: this.getMetricStatus(diskUsage, diskT.warning, diskT.critical),
           trend: await this.calculateTrend('Disk Usage', diskUsage)
         },
         {
           name: 'Network Load',
           value: networkLoad,
           unit: '%',
-          status: this.getMetricStatus(networkLoad, 75, 90),
+          status: this.getMetricStatus(networkLoad, netT.warning, netT.critical),
           trend: await this.calculateTrend('Network Load', networkLoad)
         }
       ];
@@ -276,6 +318,43 @@ class PerformanceService {
     return 'normal';
   }
 
+  getThresholdsFor(metricName) {
+    const t = this.alertThresholds[metricName];
+    if (t && typeof t.warning === 'number' && typeof t.critical === 'number') {
+      return t;
+    }
+    // Fallbacks
+    return { warning: 75, critical: 90 };
+  }
+
+  getAllThresholdSettings() {
+    return { ...this.alertThresholds };
+  }
+
+  updateThresholdSettings(partial) {
+    // Accept keys mapping known metric names or shorthand keys
+    const map = {
+      cpuUsage: 'CPU Usage',
+      memoryUsage: 'Memory Usage',
+      diskUsage: 'Disk Usage',
+      networkLoad: 'Network Load',
+    };
+    Object.entries(partial || {}).forEach(([key, value]) => {
+      const metric = map[key] || key;
+      if (this.alertThresholds[metric]) {
+        const warning = Number(value?.warning ?? value);
+        const critical = Number(value?.critical ?? (warning + 10));
+        if (!Number.isNaN(warning) && !Number.isNaN(critical)) {
+          this.alertThresholds[metric] = {
+            warning: Math.max(0, Math.min(100, warning)),
+            critical: Math.max(0, Math.min(100, critical))
+          };
+        }
+      }
+    });
+    return this.getAllThresholdSettings();
+  }
+
   getFallbackSystemMetrics() {
     return [
       { name: 'CPU Usage', value: 45, unit: '%', status: 'normal', trend: 0 },
@@ -324,10 +403,11 @@ class PerformanceService {
 
   async calculateProcessedToday() {
     const query = `
-      SELECT processed_today 
-      FROM ml_performance 
-      WHERE DATE(timestamp) = CURRENT_DATE 
-      ORDER BY timestamp DESC 
+      SELECT metric_value AS processed_today
+      FROM performance_metrics
+      WHERE component = 'ml' AND metric_name = 'processed_today'
+        AND DATE(recorded_at) = CURRENT_DATE
+      ORDER BY recorded_at DESC
       LIMIT 1
     `;
     try {
@@ -341,27 +421,27 @@ class PerformanceService {
   }
 
   async storeMLPerformance(metrics) {
-    const query = `
-      INSERT INTO ml_performance 
-      (inference_speed, model_accuracy, processing_latency, queue_size, processed_today, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6)
+    // Store ML metrics into consolidated performance_metrics table
+    const now = new Date();
+    const rows = [
+      ['inference_speed', metrics.inferenceSpeed, 'ops/s'],
+      ['model_accuracy', metrics.modelAccuracy, '%'],
+      ['processing_latency', metrics.processingLatency, 'ms'],
+      ['queue_size', metrics.queueSize, 'count'],
+      ['processed_today', metrics.processedToday, 'count']
+    ];
+    const insertText = `
+      INSERT INTO performance_metrics (metric_name, metric_value, metric_unit, component, recorded_at)
+      VALUES ($1, $2, $3, 'ml', $4)
       RETURNING id
     `;
-    const values = [
-      metrics.inferenceSpeed,
-      metrics.modelAccuracy,
-      metrics.processingLatency,
-      metrics.queueSize,
-      metrics.processedToday,
-      new Date()
-    ];
     try {
-      const result = await pool.query(query, values);
-      const inserted = result.rows[0];
-      if (inserted?.id) {
-        console.log(`[storeMLPerformance] inserted id=${inserted.id} speed=${metrics.inferenceSpeed} acc=${metrics.modelAccuracy}%`);
+      const results = [];
+      for (const [name, value, unit] of rows) {
+        const res = await pool.query(insertText, [name, value, unit, now]);
+        results.push(res.rows[0]);
       }
-      return inserted;
+      return results[0] || null;
     } catch (error) {
       console.error('Error storing ML performance:', error);
       return null;
@@ -438,30 +518,34 @@ class PerformanceService {
   }
 
   async storeDatabasePerformance(metrics) {
-    const query = `
-      INSERT INTO database_performance 
-      (active_connections, max_connections, avg_query_time, cache_hit_rate, storage_used, storage_total, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+    // Store database metrics into consolidated performance_metrics table
+    const now = new Date();
+    const rows = [
+      ['active_connections', metrics.activeConnections, 'count'],
+      ['max_connections', metrics.maxConnections, 'count'],
+      ['avg_query_time', metrics.avgQueryTime, 'ms'],
+      ['cache_hit_rate', metrics.cacheHitRate, '%'],
+      ['storage_used', metrics.storageUsed, 'bytes'],
+      ['storage_total', metrics.storageTotal, 'bytes']
+    ];
+    const insertText = `
+      INSERT INTO performance_metrics (metric_name, metric_value, metric_unit, component, recorded_at)
+      VALUES ($1, $2, $3, 'database', $4)
       RETURNING id
     `;
-    const values = [
-      metrics.activeConnections,
-      metrics.maxConnections,
-      metrics.avgQueryTime,
-      metrics.cacheHitRate,
-      metrics.storageUsed,
-      metrics.storageTotal,
-      new Date()
-    ];
     try {
-      const result = await pool.query(query, values);
-      const inserted = result.rows[0];
-      if (inserted?.id) {
-        console.log(`[storeDatabasePerformance] inserted id=${inserted.id} active=${metrics.activeConnections} max=${metrics.maxConnections}`);
+      const results = [];
+      for (const [name, value, unit] of rows) {
+        const res = await pool.query(insertText, [name, value, unit, now]);
+        results.push(res.rows[0]);
       }
-      return inserted;
+      // Update cache snapshot
+      this.#updateDatabasePerformanceCache({ ...metrics, timestamp: now });
+      return results[0] || null;
     } catch (error) {
       console.error('Error storing database performance:', error);
+      // Update cache even if DB write fails
+      this.#updateDatabasePerformanceCache({ ...metrics, timestamp: new Date() });
       return null;
     }
   }
@@ -523,9 +607,14 @@ class PerformanceService {
       if (inserted?.id) {
         console.log(`[storeNetworkStats] inserted id=${inserted.id} pps=${stats.packetsPerSecond} bps=${stats.bandwidthUsed}`);
       }
+      // Always update live cache too
+      this.#updateNetworkStatsCache({ ...stats, timestamp: values[4] });
       return inserted;
     } catch (error) {
-      console.error('Error storing network stats:', error);
+      // Table may not exist (42P01) or other DB issues – keep the app live by caching
+      console.warn('Error storing network stats, using in-memory cache instead:', error?.code || error?.message);
+      const now = new Date();
+      this.#updateNetworkStatsCache({ ...stats, timestamp: now });
       return null;
     }
   }
@@ -543,7 +632,7 @@ class PerformanceService {
   async calculateAndStoreSystemHealth() {
     try {
       const healthMetrics = await this.collectSystemHealth();
-      await this.storeSystemHealth(healthMetrics);
+      // Don't store system health in database - return directly
       return healthMetrics;
     } catch (error) {
       console.error('Error calculating system health:', error);
@@ -585,30 +674,13 @@ class PerformanceService {
   }
 
   async storeSystemHealth(health) {
-    const query = `
-      INSERT INTO system_health 
-      (overall_status, uptime_seconds, last_restart, health_score, timestamp)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id
-    `;
-    const values = [
-      health.overallStatus,
-      health.uptimeSeconds,
-      health.lastRestart,
-      health.healthScore,
-      new Date()
-    ];
-    try {
-      const result = await pool.query(query, values);
-      const inserted = result.rows[0];
-      if (inserted?.id) {
-        console.log(`[storeSystemHealth] inserted id=${inserted.id} status=${health.overallStatus} score=${health.healthScore}`);
-      }
-      return inserted;
-    } catch (error) {
-      console.error('Error storing system health:', error);
-      return null;
-    }
+    // System health is calculated on-demand, no database storage needed
+    console.log(`[storeSystemHealth] calculated status=${health.overallStatus} score=${health.healthScore}`);
+    return {
+      id: `health_${Date.now()}`,
+      ...health,
+      timestamp: new Date()
+    };
   }
 
   getFallbackSystemHealth() {
@@ -668,11 +740,7 @@ class PerformanceService {
         metric_name as name,
         metric_value as value,
         metric_unit as unit,
-        CASE 
-          WHEN metric_value >= 85 THEN 'critical'
-          WHEN metric_value >= 70 THEN 'warning'
-          ELSE 'normal'
-        END as status,
+        'normal' as status,
         COALESCE(
           (SELECT metric_value - pm2.metric_value 
            FROM performance_metrics pm2 
@@ -689,13 +757,17 @@ class PerformanceService {
     `;
     try {
       const result = await pool.query(query);
-      return result.rows.map(row => ({
-        name: row.name,
-        value: parseFloat(row.value),
-        unit: row.unit,
-        status: row.status,
-        trend: parseFloat(row.trend || 0)
-      }));
+      return result.rows.map(row => {
+        const thresholds = this.getThresholdsFor(row.name);
+        const status = this.getMetricStatus(parseFloat(row.value), thresholds.warning, thresholds.critical);
+        return {
+          name: row.name,
+          value: parseFloat(row.value),
+          unit: row.unit,
+          status,
+          trend: parseFloat(row.trend || 0)
+        };
+      });
     } catch (error) {
       console.error('Error getting latest system metrics:', error);
       return [];
@@ -710,9 +782,10 @@ class PerformanceService {
         severity,
         component,
         message,
-        resolved
+        resolved,
+        hidden
       FROM performance_alerts 
-      WHERE resolved = FALSE
+      WHERE resolved = FALSE AND (hidden = FALSE OR hidden IS NULL)
       ORDER BY timestamp DESC 
       LIMIT $1 OFFSET $2
     `;
@@ -726,7 +799,7 @@ class PerformanceService {
   }
 
   async getActiveAlertsCount() {
-    const query = `SELECT COUNT(*)::int as count FROM performance_alerts WHERE resolved = FALSE`;
+    const query = `SELECT COUNT(*)::int as count FROM performance_alerts WHERE resolved = FALSE AND (hidden = FALSE OR hidden IS NULL)`;
     try {
       const result = await pool.query(query);
       return result.rows[0]?.count || 0;
@@ -736,23 +809,101 @@ class PerformanceService {
     }
   }
 
+  async getAllAlerts(limit = 50, offset = 0) {
+    const query = `
+      SELECT 
+        alert_id as id,
+        timestamp,
+        severity,
+        component,
+        message,
+        resolved,
+        resolved_at,
+        resolved_by,
+        hidden
+      FROM performance_alerts
+      WHERE (hidden = FALSE OR hidden IS NULL)
+      ORDER BY timestamp DESC
+      LIMIT $1 OFFSET $2
+    `;
+    try {
+      const result = await pool.query(query, [limit, offset]);
+      return result.rows;
+    } catch (error) {
+      console.error('Error getting all alerts:', error);
+      return [];
+    }
+  }
+
+  async getAllAlertsCount() {
+    const query = `SELECT COUNT(*)::int as count FROM performance_alerts WHERE (hidden = FALSE OR hidden IS NULL)`;
+    try {
+      const result = await pool.query(query);
+      return result.rows[0]?.count || 0;
+    } catch (error) {
+      console.error('Error counting all alerts:', error);
+      return 0;
+    }
+  }
+
+  async resolveAlertById(alertId, resolvedBy = null) {
+    const query = `
+      UPDATE performance_alerts
+      SET resolved = TRUE,
+          resolved_at = NOW(),
+          resolved_by = COALESCE($2, resolved_by)
+      WHERE alert_id = $1
+      RETURNING alert_id as id, timestamp, severity, component, message, resolved, resolved_at, resolved_by
+    `;
+    try {
+      const result = await pool.query(query, [alertId, resolvedBy]);
+      if (result.rowCount === 0) {
+        return null;
+      }
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error resolving alert:', error);
+      throw error;
+    }
+  }
+
+  async hideAlertById(alertId, hiddenBy = null) {
+    const query = `
+      UPDATE performance_alerts
+      SET hidden = TRUE,
+          resolved_by = COALESCE($2, resolved_by)
+      WHERE alert_id = $1
+      RETURNING alert_id as id, timestamp, severity, component, message, resolved, hidden, resolved_at, resolved_by
+    `;
+    try {
+      const result = await pool.query(query, [alertId, hiddenBy]);
+      if (result.rowCount === 0) {
+        return null;
+      }
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error hiding alert:', error);
+      throw error;
+    }
+  }
+
+  // Get latest performance data with fallbacks
   async getLatestPerformanceData() {
     try {
-      const results = await Promise.allSettled([
-        pool.query('SELECT * FROM ml_performance ORDER BY timestamp DESC LIMIT 1'),
-        pool.query('SELECT * FROM database_performance ORDER BY timestamp DESC LIMIT 1'),
-        pool.query('SELECT * FROM network_statistics ORDER BY timestamp DESC LIMIT 1'),
-        pool.query('SELECT * FROM system_health ORDER BY timestamp DESC LIMIT 1')
-      ]);
+      const sysHealth = await this.collectSystemHealth().catch(() => this.getFallbackSystemHealth());
+      
       return {
-        ml_performance: results[0].status === 'fulfilled' ? results[0].value.rows[0] : null,
-        database_performance: results[1].status === 'fulfilled' ? results[1].value.rows[0] : null,
-        network_statistics: results[2].status === 'fulfilled' ? results[2].value.rows[0] : null,
-        system_health: results[3].status === 'fulfilled' ? results[3].value.rows[0] : null
+        network_statistics: this.networkStatsCache?.latest || this.getFallbackNetworkStats(),
+        system_health: sysHealth,
+        database_performance: this.databasePerformanceCache?.latest || this.getFallbackDatabasePerformance()
       };
     } catch (error) {
-      console.error('Error getting latest performance data:', error);
-      return {};
+      console.warn('Error getting performance data, using fallbacks:', error?.message);
+      return {
+        network_statistics: this.getFallbackNetworkStats(),
+        system_health: this.getFallbackSystemHealth(),
+        database_performance: this.getFallbackDatabasePerformance()
+      };
     }
   }
 

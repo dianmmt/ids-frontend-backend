@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Settings2, 
   Bell, 
   Shield, 
   Database, 
@@ -13,19 +12,11 @@ import {
   EyeOff,
   Brain,
   Activity,
-  Clock,
-  Mail,
-  Phone,
-  Key,
-  Server,
   Upload,
   Play,
   Trash2,
-  Download,
   FileText,
-  Zap,
   Star,
-  Settings as SettingsIcon,
   XCircle
 } from 'lucide-react';
 
@@ -161,6 +152,7 @@ export const Settings: React.FC = () => {
     name: '', 
     version: '', 
     framework: '', 
+    model_type: 'binary-classification',
     description: '',
     accuracy: '',
     precision_score: '',
@@ -174,7 +166,7 @@ export const Settings: React.FC = () => {
 
   async function fetchModels() {
     try {
-      const res = await fetch('/api/ml/models', {
+      const res = await fetch('/api/models', {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
       const data = await res.json();
@@ -189,6 +181,32 @@ export const Settings: React.FC = () => {
       fetchModels();
     }
   }, [activeTab]);
+
+  // Load thresholds from backend on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/performance/thresholds');
+        if (res.ok) {
+          const data = await res.json();
+          const t = data?.thresholds || {};
+          // Map backend metric names to UI fields where necessary
+          setSettings(prev => ({
+            ...prev,
+            alertThresholds: {
+              ...prev.alertThresholds,
+              cpuUsage: t['CPU Usage']?.warning ?? prev.alertThresholds.cpuUsage,
+              memoryUsage: t['Memory Usage']?.warning ?? prev.alertThresholds.memoryUsage,
+              diskUsage: t['Disk Usage']?.warning ?? prev.alertThresholds.diskUsage,
+              networkLatency: prev.alertThresholds.networkLatency,
+              mlInferenceLatency: prev.alertThresholds.mlInferenceLatency,
+              attackDetectionConfidence: prev.alertThresholds.attackDetectionConfidence,
+            }
+          }));
+        }
+      } catch {}
+    })();
+  }, []);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -234,7 +252,7 @@ export const Settings: React.FC = () => {
         reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
         reader.readAsDataURL(selectedFile);
       });
-      const res = await fetch('/api/ml/models', {
+      const res = await fetch('/api/models', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -245,6 +263,7 @@ export const Settings: React.FC = () => {
           version: meta.version || '1.0.0',
           format: ext,
           framework: meta.framework || undefined,
+          model_type: meta.model_type || 'binary-classification',
           description: meta.description || undefined,
           base64Content,
           accuracy: meta.accuracy ? parseFloat(meta.accuracy) : undefined,
@@ -262,6 +281,7 @@ export const Settings: React.FC = () => {
         name: '', 
         version: '', 
         framework: '', 
+        model_type: 'binary-classification',
         description: '',
         accuracy: '',
         precision_score: '',
@@ -280,7 +300,7 @@ export const Settings: React.FC = () => {
 
   async function activateModel(id: string) {
     try {
-      const res = await fetch(`/api/ml/models/${id}/activate`, {
+      const res = await fetch(`/api/models/${id}/activate`, {
         method: 'POST',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -294,7 +314,7 @@ export const Settings: React.FC = () => {
 
   async function deactivateModel(id: string) {
     try {
-      const res = await fetch(`/api/ml/models/${id}/deactivate`, {
+      const res = await fetch(`/api/models/${id}/deactivate`, {
         method: 'POST',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -309,7 +329,7 @@ export const Settings: React.FC = () => {
   async function deleteModel(id: string) {
     if (!confirm('Are you sure you want to delete this model?')) return;
     try {
-      const res = await fetch(`/api/ml/models/${id}`, {
+      const res = await fetch(`/api/models/${id}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -349,7 +369,21 @@ export const Settings: React.FC = () => {
 
   const saveSettings = async () => {
     try {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Persist alert thresholds to backend
+      const payload = {
+        thresholds: {
+          cpuUsage: { warning: settings.alertThresholds.cpuUsage },
+          memoryUsage: { warning: settings.alertThresholds.memoryUsage },
+          diskUsage: { warning: settings.alertThresholds.diskUsage },
+          networkLoad: { warning: settings.alertThresholds.networkLatency },
+        }
+      };
+      await fetch('/api/performance/thresholds', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      await new Promise(resolve => setTimeout(resolve, 300));
       setHasUnsavedChanges(false);
       alert('Settings saved successfully!');
     } catch (error) {
@@ -546,14 +580,9 @@ export const Settings: React.FC = () => {
                 <div className="flex items-center space-x-2 text-sm text-gray-400">
                   <Activity className="h-4 w-4" />
                   <span>{models.filter(m => m.is_active).length} active model{models.filter(m => m.is_active).length !== 1 ? 's' : ''}</span>
+                 
                 </div>
-                <a
-                  href="/model-management"
-                  className="flex items-center space-x-2 bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg transition-colors"
-                >
-                  <SettingsIcon className="h-4 w-4" />
-                  <span>Advanced Model Management</span>
-                </a>
+                
               </div>
             </div>
 

@@ -1,23 +1,37 @@
-# backend/Dockerfile
-FROM node:18-alpine
+FROM node:20-alpine AS development
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
+# Install backend dependencies
+COPY backend/package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm install
+# Install nodemon for development
+RUN npm install -g nodemon
 
-# Copy source code
-COPY . .
+# Copy source (will be overridden by volume mount in docker-compose)
+COPY backend/. ./
 
 # Expose port
 EXPOSE 3001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl -f http://localhost:3001/api/health || exit 1
+# Run server with nodemon for auto-reload
+CMD ["nodemon", "server.js"]
 
-# Start the application
-CMD ["npm", "start"]
+# Production stage (optional)
+FROM node:20-alpine AS production
+
+WORKDIR /app
+
+# Install backend dependencies
+COPY backend/package*.json ./
+RUN npm ci --only=production
+
+# Copy source
+COPY backend/. ./
+
+# Expose port
+EXPOSE 3001
+
+# Run server in production mode
+CMD ["node", "server.js"]

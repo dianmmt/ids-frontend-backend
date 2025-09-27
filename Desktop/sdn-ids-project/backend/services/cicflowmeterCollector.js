@@ -1,22 +1,32 @@
 // backend/services/cicflowmeterCollector.js - CICFlowMeter Data Collector
 import fs from 'fs';
+import path from 'path';
 import csv from 'csv-parser';
 import net from 'net';
 import { query } from './database.js';
+import CICFlowMeterFeatureMapper from './cicflowmeterFeatureMapper.js';
 
 export class CICFlowMeterCollector {
   constructor(options = {}) {
     this.csvPath = options.csvPath || process.env.CICFLOWMETER_CSV_PATH;
+    this.csvDirectory = options.csvDirectory || process.env.CICFLOWMETER_CSV_DIRECTORY;
+    this.csvPattern = options.csvPattern || process.env.CICFLOWMETER_CSV_PATTERN || '*_Flow.csv';
     this.socketPort = options.socketPort || parseInt(process.env.CICFLOWMETER_SOCKET_PORT) || 9999;
     this.socketHost = options.socketHost || process.env.CICFLOWMETER_SOCKET_HOST || 'localhost';
     this.batchSize = options.batchSize || parseInt(process.env.CICFLOWMETER_BATCH_SIZE) || 100;
     this.pollInterval = options.pollInterval || parseInt(process.env.CICFLOWMETER_POLL_INTERVAL) || 5000;
     
+    // Initialize feature mapper
+    this.featureMapper = new CICFlowMeterFeatureMapper();
+    
     this.isRunning = false;
     this.socketServer = null;
     this.csvWatcher = null;
+    this.directoryWatcher = null;
     this.buffer = [];
     this.lastProcessedLine = 0;
+    this.activeFiles = new Map(); // Track active files and their last processed line
+    this.fileWatchers = new Map(); // Track individual file watchers
   }
 
   /**
@@ -29,8 +39,10 @@ export class CICFlowMeterCollector {
       // Start socket server for real-time data
       await this.startSocketServer();
       
-      // Start CSV file monitoring
-      if (this.csvPath) {
+      // Start CSV monitoring (file or directory)
+      if (this.csvDirectory) {
+        await this.startDirectoryMonitoring();
+      } else if (this.csvPath) {
         await this.startCSVMonitoring();
       }
       
@@ -60,6 +72,18 @@ export class CICFlowMeterCollector {
       this.csvWatcher.close();
       this.csvWatcher = null;
     }
+    
+    if (this.directoryWatcher) {
+      this.directoryWatcher.close();
+      this.directoryWatcher = null;
+    }
+    
+    // Close all file watchers
+    for (const [filePath, watcher] of this.fileWatchers) {
+      watcher.close();
+    }
+    this.fileWatchers.clear();
+    this.activeFiles.clear();
     
     // Process remaining buffer
     if (this.buffer.length > 0) {
@@ -154,6 +178,192 @@ export class CICFlowMeterCollector {
   }
 
   /**
+   * Start directory monitoring for timestamp-based CSV files
+   */
+  async startDirectoryMonitoring() {
+    if (!fs.existsSync(this.csvDirectory)) {
+      console.warn(`[CICFlowMeter] CSV directory not found: ${this.csvDirectory}`);
+      return;
+    }
+    
+    console.log(`[CICFlowMeter] Monitoring directory: ${this.csvDirectory} for pattern: ${this.csvPattern}`);
+    
+    // Process existing files matching the pattern
+    await this.processExistingFiles();
+    
+    // Watch directory for new files
+    this.directoryWatcher = fs.watch(this.csvDirectory, async (eventType, filename) => {
+      if (eventType === 'rename' && filename && this.matchesPattern(filename)) {
+        console.log(`[CICFlowMeter] New file detected: ${filename}`);
+        await this.addFileToMonitoring(path.join(this.csvDirectory, filename));
+      }
+    });
+    
+    // Periodic check for new files (fallback)
+    setInterval(async () => {
+      await this.checkForNewFiles();
+    }, this.pollInterval);
+  }
+
+  /**
+   * Check if filename matches the pattern
+   */
+  matchesPattern(filename) {
+    const pattern = this.csvPattern.replace('*', '.*');
+    const regex = new RegExp(`^${pattern}$`);
+    return regex.test(filename);
+  }
+
+  /**
+   * Process existing files in the directory
+   */
+  async processExistingFiles() {
+    try {
+      const files = fs.readdirSync(this.csvDirectory);
+      const matchingFiles = files
+        .filter(file => this.matchesPattern(file))
+        .map(file => ({
+          name: file,
+          path: path.join(this.csvDirectory, file),
+          stats: fs.statSync(path.join(this.csvDirectory, file))
+        }))
+        .sort((a, b) => b.stats.mtime.getTime() - a.stats.mtime.getTime()); // Sort by modification time, newest first
+      
+      console.log(`[CICFlowMeter] Found ${matchingFiles.length} existing files matching pattern`);
+      
+      // Monitor the most recent file and any files that might still be growing
+      for (const file of matchingFiles) {
+        const ageMinutes = (Date.now() - file.stats.mtime.getTime()) / (1000 * 60);
+        if (ageMinutes < 5) { // Files modified in last 5 minutes
+          await this.addFileToMonitoring(file.path);
+        }
+      }
+    } catch (error) {
+      console.error('[CICFlowMeter] Error processing existing files:', error);
+    }
+  }
+
+  /**
+   * Check for new files periodically
+   */
+  async checkForNewFiles() {
+    try {
+      const files = fs.readdirSync(this.csvDirectory);
+      const matchingFiles = files.filter(file => this.matchesPattern(file));
+      
+      for (const filename of matchingFiles) {
+        const filePath = path.join(this.csvDirectory, filename);
+        if (!this.activeFiles.has(filePath)) {
+          console.log(`[CICFlowMeter] New file detected during periodic check: ${filename}`);
+          await this.addFileToMonitoring(filePath);
+        }
+      }
+    } catch (error) {
+      console.error('[CICFlowMeter] Error checking for new files:', error);
+    }
+  }
+
+  /**
+   * Add a file to monitoring
+   */
+  async addFileToMonitoring(filePath) {
+    if (this.activeFiles.has(filePath)) {
+      return; // Already monitoring this file
+    }
+    
+    try {
+      console.log(`[CICFlowMeter] Adding file to monitoring: ${filePath}`);
+      
+      // Initialize tracking for this file
+      this.activeFiles.set(filePath, {
+        lastProcessedLine: 0,
+        lastSize: 0
+      });
+      
+      // Watch for changes to this file
+      const watcher = fs.watch(filePath, async (eventType) => {
+        if (eventType === 'change') {
+          await this.processFileChanges(filePath);
+        }
+      });
+      
+      this.fileWatchers.set(filePath, watcher);
+      
+      // Initial processing
+      await this.processFileChanges(filePath);
+      
+    } catch (error) {
+      console.error(`[CICFlowMeter] Error adding file to monitoring: ${filePath}`, error);
+    }
+  }
+
+  /**
+   * Process changes to a specific file
+   */
+  async processFileChanges(filePath) {
+    try {
+      if (!fs.existsSync(filePath)) {
+        console.log(`[CICFlowMeter] File no longer exists: ${filePath}`);
+        this.removeFileFromMonitoring(filePath);
+        return;
+      }
+      
+      const fileInfo = this.activeFiles.get(filePath);
+      if (!fileInfo) {
+        return;
+      }
+      
+      const stats = fs.statSync(filePath);
+      const currentSize = stats.size;
+      
+      // Only process if file has grown
+      if (currentSize <= fileInfo.lastSize) {
+        return;
+      }
+      
+      const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+      const newLines = lines.slice(fileInfo.lastProcessedLine);
+      
+      for (const line of newLines) {
+        if (line.trim()) {
+          try {
+            const flowData = this.parseCSVLine(line);
+            if (flowData) {
+              this.buffer.push(flowData);
+            }
+          } catch (error) {
+            console.error(`[CICFlowMeter] Error parsing line from ${filePath}:`, error);
+          }
+        }
+      }
+      
+      // Update tracking info
+      fileInfo.lastProcessedLine = lines.length;
+      fileInfo.lastSize = currentSize;
+      
+      // Process batch if buffer is full
+      if (this.buffer.length >= this.batchSize) {
+        await this.processBatch(this.buffer.splice(0, this.batchSize));
+      }
+      
+    } catch (error) {
+      console.error(`[CICFlowMeter] Error processing file changes: ${filePath}`, error);
+    }
+  }
+
+  /**
+   * Remove file from monitoring
+   */
+  removeFileFromMonitoring(filePath) {
+    if (this.fileWatchers.has(filePath)) {
+      this.fileWatchers.get(filePath).close();
+      this.fileWatchers.delete(filePath);
+    }
+    this.activeFiles.delete(filePath);
+    console.log(`[CICFlowMeter] Removed file from monitoring: ${filePath}`);
+  }
+
+  /**
    * Process new lines from CSV file
    */
   async processNewCSVLines() {
@@ -187,7 +397,7 @@ export class CICFlowMeterCollector {
   }
 
   /**
-   * Parse a CSV line into flow data
+   * Parse a CSV line into flow data using proper feature mapping
    */
   parseCSVLine(line) {
     const values = line.split(',').map(v => v.trim().replace(/"/g, ''));
@@ -197,91 +407,56 @@ export class CICFlowMeterCollector {
     }
     
     try {
-      return {
-        flow_id: this.generateFlowId(values[1], values[2], values[3], values[4]), // src_ip, dst_ip, src_port, dst_port
-        src_ip: values[1],
-        dst_ip: values[2],
-        src_port: parseInt(values[3]) || 0,
-        dst_port: parseInt(values[4]) || 0,
-        protocol: values[5] || 'TCP',
-        
-        // Flow statistics
-        flow_duration: parseFloat(values[6]) || 0,
-        total_fwd_packets: parseInt(values[7]) || 0,
-        total_backward_packets: parseInt(values[8]) || 0,
-        total_length_of_fwd_packets: parseInt(values[9]) || 0,
-        total_length_of_bwd_packets: parseInt(values[10]) || 0,
-        
-        // Packet length features
-        fwd_packet_length_max: parseFloat(values[11]) || 0,
-        fwd_packet_length_min: parseFloat(values[12]) || 0,
-        fwd_packet_length_mean: parseFloat(values[13]) || 0,
-        fwd_packet_length_std: parseFloat(values[14]) || 0,
-        bwd_packet_length_max: parseFloat(values[15]) || 0,
-        bwd_packet_length_min: parseFloat(values[16]) || 0,
-        bwd_packet_length_mean: parseFloat(values[17]) || 0,
-        bwd_packet_length_std: parseFloat(values[18]) || 0,
-        
-        // Flow timing features
-        flow_bytes_per_second: parseFloat(values[19]) || 0,
-        flow_packets_per_second: parseFloat(values[20]) || 0,
-        flow_iat_mean: parseFloat(values[21]) || 0,
-        flow_iat_std: parseFloat(values[22]) || 0,
-        flow_iat_max: parseFloat(values[23]) || 0,
-        flow_iat_min: parseFloat(values[24]) || 0,
-        
-        // Forward/Backward IAT features
-        fwd_iat_total: parseFloat(values[25]) || 0,
-        fwd_iat_mean: parseFloat(values[26]) || 0,
-        fwd_iat_std: parseFloat(values[27]) || 0,
-        fwd_iat_max: parseFloat(values[28]) || 0,
-        fwd_iat_min: parseFloat(values[29]) || 0,
-        bwd_iat_total: parseFloat(values[30]) || 0,
-        bwd_iat_mean: parseFloat(values[31]) || 0,
-        bwd_iat_std: parseFloat(values[32]) || 0,
-        bwd_iat_max: parseFloat(values[33]) || 0,
-        bwd_iat_min: parseFloat(values[34]) || 0,
-        
-        // Protocol features
-        fwd_psh_flags: parseInt(values[35]) || 0,
-        bwd_psh_flags: parseInt(values[36]) || 0,
-        fwd_urg_flags: parseInt(values[37]) || 0,
-        bwd_urg_flags: parseInt(values[38]) || 0,
-        fwd_header_length: parseInt(values[39]) || 0,
-        bwd_header_length: parseInt(values[40]) || 0,
-        fwd_packets_per_second: parseFloat(values[41]) || 0,
-        bwd_packets_per_second: parseFloat(values[42]) || 0,
-        
-        // Window size and packet length features
-        min_packet_length: parseFloat(values[43]) || 0,
-        max_packet_length: parseFloat(values[44]) || 0,
-        packet_length_mean: parseFloat(values[45]) || 0,
-        packet_length_std: parseFloat(values[46]) || 0,
-        packet_length_variance: parseFloat(values[47]) || 0,
-        
-        // Flag counts
-        fin_flag_count: parseInt(values[48]) || 0,
-        syn_flag_count: parseInt(values[49]) || 0,
-        rst_flag_count: parseInt(values[50]) || 0,
-        psh_flag_count: parseInt(values[51]) || 0,
-        ack_flag_count: parseInt(values[52]) || 0,
-        urg_flag_count: parseInt(values[53]) || 0,
-        cwe_flag_count: parseInt(values[54]) || 0,
-        ece_flag_count: parseInt(values[55]) || 0,
-        
-        // Additional features
-        down_up_ratio: parseInt(values[56]) || 0,
-        average_packet_size: parseFloat(values[57]) || 0,
-        avg_fwd_segment_size: parseFloat(values[58]) || 0,
-        avg_bwd_segment_size: parseFloat(values[59]) || 0,
-        
-        // Flow start time (use current time if not available)
-        flow_start_time: new Date().toISOString()
-      };
+      // Create CSV row object using CICFlowMeter headers
+      const csvRow = this.createCSVRowObject(values);
+      
+      // Use feature mapper to convert CSV data to database format
+      const mappedData = this.featureMapper.mapCsvToDatabase(csvRow);
+      
+      // Add required fields not in CICFlowMeter CSV
+      mappedData.flow_id = this.generateFlowId(mappedData.src_ip, mappedData.dst_ip, mappedData.src_port, mappedData.dst_port);
+      mappedData.packet_count = (mappedData.total_fwd_packets || 0) + (mappedData.total_backward_packets || 0);
+      mappedData.byte_count = (mappedData.total_length_of_fwd_packets || 0) + (mappedData.total_length_of_bwd_packets || 0);
+      mappedData.flow_start_time = new Date().toISOString();
+      mappedData.captured_at = new Date().toISOString();
+      
+      return mappedData;
     } catch (error) {
       console.error('[CICFlowMeter] Error parsing flow data:', error);
       return null;
     }
+  }
+
+  /**
+   * Create CSV row object from values array using CICFlowMeter headers
+   */
+  createCSVRowObject(values) {
+    const headers = [
+      'Protocol', 'Flow Duration', 'Tot Fwd Pkts', 'Tot Bwd Pkts', 'TotLen Fwd Pkts', 'TotLen Bwd Pkts',
+      'Fwd Pkt Len Max', 'Fwd Pkt Len Min', 'Fwd Pkt Len Mean', 'Fwd Pkt Len Std',
+      'Bwd Pkt Len Max', 'Bwd Pkt Len Min', 'Bwd Pkt Len Mean', 'Bwd Pkt Len Std',
+      'Flow Byts/s', 'Flow Pkts/s', 'Flow IAT Mean', 'Flow IAT Std', 'Flow IAT Max', 'Flow IAT Min',
+      'Fwd IAT Tot', 'Fwd IAT Mean', 'Fwd IAT Std', 'Fwd IAT Max', 'Fwd IAT Min',
+      'Bwd IAT Tot', 'Bwd IAT Mean', 'Bwd IAT Std', 'Bwd IAT Max', 'Bwd IAT Min',
+      'Fwd PSH Flags', 'Bwd PSH Flags', 'Fwd URG Flags', 'Bwd URG Flags',
+      'Fwd Header Len', 'Bwd Header Len', 'Fwd Pkts/s', 'Bwd Pkts/s',
+      'Pkt Len Min', 'Pkt Len Max', 'Pkt Len Mean', 'Pkt Len Std', 'Pkt Len Var',
+      'FIN Flag Cnt', 'SYN Flag Cnt', 'RST Flag Cnt', 'PSH Flag Cnt', 'ACK Flag Cnt', 'URG Flag Cnt',
+      'CWE Flag Count', 'ECE Flag Cnt', 'Down/Up Ratio', 'Pkt Size Avg',
+      'Fwd Seg Size Avg', 'Bwd Seg Size Avg', 'Fwd Byts/b Avg', 'Fwd Pkts/b Avg', 'Fwd Blk Rate Avg',
+      'Bwd Byts/b Avg', 'Bwd Pkts/b Avg', 'Bwd Blk Rate Avg',
+      'Subflow Fwd Pkts', 'Subflow Fwd Byts', 'Subflow Bwd Pkts', 'Subflow Bwd Byts',
+      'Init Fwd Win Byts', 'Init Bwd Win Byts', 'Fwd Act Data Pkts', 'Fwd Seg Size Min',
+      'Active Mean', 'Active Std', 'Active Max', 'Active Min',
+      'Idle Mean', 'Idle Std', 'Idle Max', 'Idle Min'
+    ];
+
+    const csvRow = {};
+    headers.forEach((header, index) => {
+      csvRow[header] = values[index] || '';
+    });
+
+    return csvRow;
   }
 
   /**

@@ -7,9 +7,11 @@ export async function listModels() {
     const result = await pool.query(`
       SELECT 
         id, name, version, format, framework, description,
-        sha256, size_bytes, uploaded_by, uploaded_at, is_active
+        accuracy, precision_score, recall_score, f1_score,
+        training_samples, test_samples,
+        sha256, size_bytes, uploaded_by, created_at, is_active
       FROM model_registry 
-      ORDER BY uploaded_at DESC
+      ORDER BY created_at DESC
     `);
     
     return result.rows.map(row => ({
@@ -19,10 +21,17 @@ export async function listModels() {
       format: row.format,
       framework: row.framework,
       description: row.description,
+      accuracy: row.accuracy,
+      precision_score: row.precision_score,
+      recall_score: row.recall_score,
+      f1_score: row.f1_score,
+      training_samples: row.training_samples,
+      test_samples: row.test_samples,
       sha256: row.sha256,
       size_bytes: row.size_bytes,
       uploaded_by: row.uploaded_by,
-      uploaded_at: row.uploaded_at,
+      uploaded_at: row.created_at,
+      created_at: row.created_at,
       is_active: row.is_active
     }));
   } catch (error) {
@@ -31,11 +40,11 @@ export async function listModels() {
   }
 }
 
-export async function uploadModel({ name, version, format, framework, description, base64Content, uploadedBy, accuracy, precision_score, recall_score, f1_score, training_samples, test_samples }) {
+export async function uploadModel({ name, version, format, framework, model_type, description, base64Content, uploadedBy, accuracy, precision_score, recall_score, f1_score, training_samples, test_samples }) {
   try {
     // Validate required fields
-    if (!name || !version || !format || !base64Content) {
-      throw new Error('Missing required fields: name, version, format, base64Content');
+    if (!name || !version || !format || !base64Content || !model_type) {
+      throw new Error('Missing required fields: name, version, format, base64Content, model_type');
     }
     
     // Validate format
@@ -66,43 +75,37 @@ export async function uploadModel({ name, version, format, framework, descriptio
     try {
       await client.query('BEGIN');
       
-      // Insert model metadata
+      // Insert model metadata (new schema columns)
       const modelResult = await client.query(`
         INSERT INTO model_registry (
-          name, version, format, framework, description, 
-          sha256, size_bytes, uploaded_by, uploaded_at, is_active
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), false)
+          name, version, format, framework, model_type, description,
+          accuracy, precision_score, recall_score, f1_score,
+          training_samples, test_samples,
+          sha256, size_bytes, uploaded_by, status, upload_status, is_active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'active', 'ready', false)
         RETURNING id
-      `, [name, version, format, framework, description, sha256, size_bytes, uploadedBy]);
+      `, [
+        name, version, format, framework, model_type, description,
+        accuracy ?? null, precision_score ?? null, recall_score ?? null, f1_score ?? null,
+        training_samples ?? null, test_samples ?? null,
+        sha256, size_bytes, uploadedBy || null
+      ]);
       
       const modelId = modelResult.rows[0].id;
       
-      // Store model content
+      // Store model content in model_files (database storage)
       await client.query(`
-        INSERT INTO model_artifacts (model_id, content) VALUES ($1, $2)
-      `, [modelId, content]);
-      
-      // Insert performance metrics if provided
-      if (accuracy !== undefined || precision_score !== undefined || recall_score !== undefined || f1_score !== undefined) {
-        await client.query(`
-          INSERT INTO model_versions (
-            model_id, version_number, performance_metrics, training_data_info
-          ) VALUES ($1, $2, $3, $4)
-        `, [
-          modelId, 
-          version,
-          JSON.stringify({
-            accuracy: accuracy || null,
-            precision_score: precision_score || null,
-            recall_score: recall_score || null,
-            f1_score: f1_score || null
-          }),
-          JSON.stringify({
-            training_samples: training_samples || null,
-            test_samples: test_samples || null
-          })
-        ]);
-      }
+        INSERT INTO model_files (
+          model_id, file_name, file_type, file_size, file_hash,
+          upload_status, storage_type, content
+        ) VALUES ($1, $2, 'model', $3, $4, 'completed', 'database', $5)
+      `, [
+        modelId,
+        `${name}.${format}`,
+        size_bytes,
+        sha256,
+        content
+      ]);
       
       await client.query('COMMIT');
       
@@ -115,7 +118,7 @@ export async function uploadModel({ name, version, format, framework, descriptio
         description,
         sha256,
         size_bytes,
-        uploaded_by: uploadedBy,
+        uploaded_by: uploadedBy || null,
         uploaded_at: new Date().toISOString(),
         is_active: false
       };
@@ -139,14 +142,7 @@ export async function setActiveModel(id) {
     try {
       await client.query('BEGIN');
       
-      // Deactivate all other models
-      await client.query(`
-        UPDATE model_registry 
-        SET is_active = false 
-        WHERE id != $1
-      `, [id]);
-      
-      // Activate the specified model
+      // Activate the specified model (allow multiple active models)
       const result = await client.query(`
         UPDATE model_registry 
         SET is_active = true 
@@ -216,11 +212,8 @@ export async function deleteModel(id) {
         throw new Error('Cannot delete active model. Please deactivate it first.');
       }
       
-      // Delete model artifacts
-      await client.query('DELETE FROM model_artifacts WHERE model_id = $1', [id]);
-      
-      // Delete model versions
-      await client.query('DELETE FROM model_versions WHERE model_id = $1', [id]);
+      // Delete model files
+      await client.query('DELETE FROM model_files WHERE model_id = $1', [id]);
       
       // Delete model registry entry
       await client.query('DELETE FROM model_registry WHERE id = $1', [id]);
@@ -245,37 +238,7 @@ export async function deleteModel(id) {
   }
 }
 
-export async function downloadModel(id) {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        mr.name, mr.version, mr.format, mr.framework, mr.sha256, mr.size_bytes,
-        ma.content
-      FROM model_registry mr
-      JOIN model_artifacts ma ON mr.id = ma.model_id
-      WHERE mr.id = $1
-    `, [id]);
-    
-    if (result.rows.length === 0) {
-      return null;
-    }
-    
-    const row = result.rows[0];
-    return {
-      name: row.name,
-      version: row.version,
-      format: row.format,
-      framework: row.framework,
-      sha256: row.sha256,
-      size_bytes: row.size_bytes,
-      content: row.content
-    };
-    
-  } catch (error) {
-    console.error('Error downloading model:', error);
-    throw new Error(`Failed to download model: ${error.message}`);
-  }
-}
+// Download functionality removed - models are managed in database only
 
 export async function getModelById(id) {
   try {
@@ -304,7 +267,9 @@ export async function getActiveModel() {
     const result = await pool.query(`
       SELECT 
         id, name, version, format, framework, description,
-        sha256, size_bytes, uploaded_by, uploaded_at, is_active
+        accuracy, precision_score, recall_score, f1_score,
+        training_samples, test_samples,
+        sha256, size_bytes, uploaded_by, created_at, is_active
       FROM model_registry 
       WHERE is_active = true
       LIMIT 1
@@ -319,6 +284,45 @@ export async function getActiveModel() {
   } catch (error) {
     console.error('Error getting active model:', error);
     throw new Error(`Failed to get active model: ${error.message}`);
+  }
+}
+
+export async function getAllActiveModels() {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        id, name, version, format, framework, description,
+        accuracy, precision_score, recall_score, f1_score,
+        training_samples, test_samples,
+        sha256, size_bytes, uploaded_by, created_at, is_active
+      FROM model_registry 
+      WHERE is_active = true
+      ORDER BY created_at DESC
+    `);
+    
+    return result.rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      version: row.version,
+      format: row.format,
+      framework: row.framework,
+      description: row.description,
+      accuracy: row.accuracy,
+      precision_score: row.precision_score,
+      recall_score: row.recall_score,
+      f1_score: row.f1_score,
+      training_samples: row.training_samples,
+      test_samples: row.test_samples,
+      sha256: row.sha256,
+      size_bytes: row.size_bytes,
+      uploaded_by: row.uploaded_by,
+      created_at: row.created_at,
+      is_active: row.is_active
+    }));
+    
+  } catch (error) {
+    console.error('Error getting all active models:', error);
+    throw new Error(`Failed to get active models: ${error.message}`);
   }
 }
 

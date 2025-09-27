@@ -15,7 +15,8 @@ import {
   RefreshCw,
   Loader2,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  EyeOff
 } from 'lucide-react';
 import { Chart } from './ui/Chart';
 
@@ -155,15 +156,36 @@ export const PerformanceMonitor: React.FC = () => {
         });
       }
 
-      if (data.alerts && Array.isArray(data.alerts)) {
-        setPerformanceAlerts(data.alerts.map((alert: any) => ({
-          id: alert.id || alert.alert_id || 'unknown',
-          timestamp: alert.timestamp || new Date().toISOString(),
-          severity: alert.severity || 'low',
-          component: alert.component || 'unknown',
-          message: alert.message || 'No message',
-          resolved: alert.resolved || false,
-        })));
+      // Always fetch all alerts to display (active + resolved)
+      try {
+        const allAlertsResp = await fetch(`${API_BASE_URL}/performance/alerts/all?limit=100&offset=0`, {
+          method: 'GET',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (allAlertsResp.ok) {
+          const allAlertsData = await allAlertsResp.json();
+          const alertsArray = Array.isArray(allAlertsData.alerts) ? allAlertsData.alerts : [];
+          setPerformanceAlerts(alertsArray.map((alert: any) => ({
+            id: alert.id || alert.alert_id || 'unknown',
+            timestamp: alert.timestamp || new Date().toISOString(),
+            severity: alert.severity || 'low',
+            component: alert.component || 'unknown',
+            message: alert.message || 'No message',
+            resolved: !!alert.resolved,
+          })));
+        }
+      } catch (alertsErr) {
+        console.warn('Failed to fetch all alerts, falling back to active only');
+        if (data.alerts && Array.isArray(data.alerts)) {
+          setPerformanceAlerts(data.alerts.map((alert: any) => ({
+            id: alert.id || alert.alert_id || 'unknown',
+            timestamp: alert.timestamp || new Date().toISOString(),
+            severity: alert.severity || 'low',
+            component: alert.component || 'unknown',
+            message: alert.message || 'No message',
+            resolved: alert.resolved || false,
+          })));
+        }
       }
 
       setLastRefresh(new Date());
@@ -188,6 +210,46 @@ export const PerformanceMonitor: React.FC = () => {
   useEffect(() => { const i = setInterval(fetchPerformanceData, 30000); return () => clearInterval(i); }, [fetchPerformanceData]);
 
   const handleRefresh = async () => { await fetchPerformanceData(); };
+
+  const acknowledgeAlert = async (alertId: string) => {
+    try {
+      // Optimistically remove from UI immediately
+      setPerformanceAlerts(prev => prev.filter(a => a.id !== alertId));
+      // Call backend to mark as resolved (kept in DB)
+      const response = await fetch(`${API_BASE_URL}/performance/alerts/${encodeURIComponent(alertId)}/acknowledge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to acknowledge: ${response.status}`);
+      }
+      // Optionally refresh counts/pagination later
+    } catch (e) {
+      console.error('Acknowledge alert failed:', e);
+      // Best-effort: re-fetch to sync state
+      fetchPerformanceData();
+    }
+  };
+
+  const hideAlert = async (alertId: string) => {
+    try {
+      // Optimistically remove from UI immediately
+      setPerformanceAlerts(prev => prev.filter(a => a.id !== alertId));
+      // Call backend to mark as hidden (kept in DB but hidden from UI)
+      const response = await fetch(`${API_BASE_URL}/performance/alerts/${encodeURIComponent(alertId)}/hide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to hide: ${response.status}`);
+      }
+      console.log('Alert hidden successfully');
+    } catch (e) {
+      console.error('Hide alert failed:', e);
+      // Best-effort: re-fetch to sync state
+      fetchPerformanceData();
+    }
+  };
 
   // Pagination logic for alerts
   const totalAlertPages = Math.ceil(performanceAlerts.length / alertsPerPage);
@@ -346,7 +408,7 @@ export const PerformanceMonitor: React.FC = () => {
             <h3 className="text-lg font-semibold text-white">Performance Alerts</h3>
             <div className="flex items-center space-x-4">
               <span className="text-sm text-gray-400">{performanceAlerts.filter(a => !a.resolved).length} active alerts</span>
-              <button className="text-blue-400 hover:text-blue-300 text-sm">View All</button>
+             
             </div>
           </div>
         </div>
@@ -366,7 +428,30 @@ export const PerformanceMonitor: React.FC = () => {
                       <p className="text-gray-400 text-sm mt-1">{new Date(alert.timestamp).toLocaleString()}</p>
                     </div>
                   </div>
-                  <div className="flex items-center space-x-2">{alert.resolved ? (<span className="text-green-400 text-sm">Resolved</span>) : (<button className="text-blue-400 hover:text-blue-300 text-sm">Acknowledge</button>)}</div>
+                  <div className="flex items-center space-x-2">
+                    {alert.resolved ? (
+                      <span className="text-green-400 text-sm">Resolved</span>
+                    ) : (
+                      <div className="flex items-center space-x-2">
+                        <button 
+                          onClick={() => acknowledgeAlert(alert.id)} 
+                          className="flex items-center space-x-1 text-blue-400 hover:text-blue-300 text-sm px-2 py-1 rounded hover:bg-blue-400/10 transition-colors"
+                          title="Mark as resolved"
+                        >
+                          <CheckCircle size={14} />
+                          <span>Acknowledge</span>
+                        </button>
+                        <button 
+                          onClick={() => hideAlert(alert.id)} 
+                          className="flex items-center space-x-1 text-gray-400 hover:text-red-400 text-sm px-2 py-1 rounded hover:bg-red-400/10 transition-colors"
+                          title="Hide alert (keeps data in database)"
+                        >
+                          <EyeOff size={14} />
+                          <span>Hide</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             ))
@@ -392,19 +477,131 @@ export const PerformanceMonitor: React.FC = () => {
               </button>
               
               <div className="flex items-center space-x-1">
-                {Array.from({ length: totalAlertPages }, (_, i) => i + 1).map((page) => (
-                  <button
-                    key={page}
-                    onClick={() => setCurrentAlertPage(page)}
-                    className={`px-3 py-2 text-sm rounded-lg transition-colors ${
-                      page === currentAlertPage
-                        ? 'bg-blue-600 text-white'
-                        : 'text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700'
-                    }`}
-                  >
-                    {page}
-                  </button>
-                ))}
+                {(() => {
+                  const maxVisiblePages = 5;
+                  const pages = [];
+                  
+                  if (totalAlertPages <= maxVisiblePages) {
+                    // Hiển thị tất cả trang nếu <= 5 trang
+                    for (let i = 1; i <= totalAlertPages; i++) {
+                      pages.push(
+                        <button
+                          key={i}
+                          onClick={() => setCurrentAlertPage(i)}
+                          className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                            i === currentAlertPage
+                              ? 'bg-blue-600 text-white'
+                              : 'text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700'
+                          }`}
+                        >
+                          {i}
+                        </button>
+                      );
+                    }
+                  } else {
+                    // Logic cho > 5 trang: hiển thị 3 trang đầu, ... và trang cuối
+                    if (currentAlertPage <= 3) {
+                      // Hiển thị trang 1, 2, 3, ... và trang cuối
+                      for (let i = 1; i <= 3; i++) {
+                        pages.push(
+                          <button
+                            key={i}
+                            onClick={() => setCurrentAlertPage(i)}
+                            className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                              i === currentAlertPage
+                                ? 'bg-blue-600 text-white'
+                                : 'text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700'
+                            }`}
+                          >
+                            {i}
+                          </button>
+                        );
+                      }
+                      if (totalAlertPages > 4) {
+                        pages.push(
+                          <span key="ellipsis" className="px-2 py-2 text-gray-400">...</span>
+                        );
+                        pages.push(
+                          <button
+                            key={totalAlertPages}
+                            onClick={() => setCurrentAlertPage(totalAlertPages)}
+                            className="px-3 py-2 text-sm text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700 rounded-lg transition-colors"
+                          >
+                            {totalAlertPages}
+                          </button>
+                        );
+                      }
+                    } else if (currentAlertPage >= totalAlertPages - 2) {
+                      // Hiển thị trang đầu, ..., và 3 trang cuối
+                      pages.push(
+                        <button
+                          key={1}
+                          onClick={() => setCurrentAlertPage(1)}
+                          className="px-3 py-2 text-sm text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                          1
+                        </button>
+                      );
+                      if (totalAlertPages > 4) {
+                        pages.push(
+                          <span key="ellipsis" className="px-2 py-2 text-gray-400">...</span>
+                        );
+                      }
+                      for (let i = totalAlertPages - 2; i <= totalAlertPages; i++) {
+                        pages.push(
+                          <button
+                            key={i}
+                            onClick={() => setCurrentAlertPage(i)}
+                            className={`px-3 py-2 text-sm rounded-lg transition-colors ${
+                              i === currentAlertPage
+                                ? 'bg-blue-600 text-white'
+                                : 'text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700'
+                            }`}
+                          >
+                            {i}
+                          </button>
+                        );
+                      }
+                    } else {
+                      // Hiển thị trang đầu, ..., trang hiện tại, ..., trang cuối
+                      pages.push(
+                        <button
+                          key={1}
+                          onClick={() => setCurrentAlertPage(1)}
+                          className="px-3 py-2 text-sm text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                          1
+                        </button>
+                      );
+                      pages.push(
+                        <span key="ellipsis-start" className="px-2 py-2 text-gray-400">...</span>
+                      );
+                      pages.push(
+                        <button
+                          key={currentAlertPage}
+                          onClick={() => setCurrentAlertPage(currentAlertPage)}
+                          className="px-3 py-2 text-sm bg-blue-600 text-white rounded-lg"
+                        >
+                          {currentAlertPage}
+                        </button>
+                      );
+                      pages.push(
+                        <span key="ellipsis-end" className="px-2 py-2 text-gray-400">...</span>
+                      );
+                      pages.push(
+                        <button
+                          key={totalAlertPages}
+                          onClick={() => setCurrentAlertPage(totalAlertPages)}
+                          className="px-3 py-2 text-sm text-gray-400 hover:text-white bg-gray-700/50 hover:bg-gray-700 rounded-lg transition-colors"
+                        >
+                          {totalAlertPages}
+                        </button>
+                      );
+                    }
+                  }
+                  
+                  return pages;
+                })()}
               </div>
 
               <button

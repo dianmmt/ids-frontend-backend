@@ -17,6 +17,9 @@ import numpy as np
 import pandas as pd
 import joblib
 import hashlib
+import threading
+from functools import lru_cache
+from contextlib import contextmanager
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -43,134 +46,138 @@ DB_CONFIG = {
     'password': os.getenv('DB_PASSWORD', 'sdn_password')
 }
 
-# Global variables for model management
+# Global variables for model management with thread safety
 loaded_models = {}  # Cache for loaded models
 model_cache = {}    # Cache for model metadata
 last_model_update = 0
 cache_refresh_interval = 300  # 5 minutes
+_model_lock = threading.Lock()
+_db_pool = None
 
+@contextmanager
 def get_db_connection():
-    """Get database connection"""
+    """Get database connection with context manager"""
+    conn = None
     try:
-        return psycopg2.connect(**DB_CONFIG)
+        conn = psycopg2.connect(**DB_CONFIG)
+        yield conn
     except Exception as e:
         logger.error(f"Database connection error: {e}")
-        return None
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if conn:
+            conn.close()
 
+@lru_cache(maxsize=100)
 def get_user_selected_model(user_id: str, selection_type: str = 'primary') -> Optional[Dict[str, Any]]:
-    """Get user's selected model from database"""
+    """Get user's selected model from database with caching"""
     try:
-        conn = get_db_connection()
-        if not conn:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get user's model selection
+            query = """
+                SELECT 
+                    m.id, m.model_name, m.model_type, m.model_path,
+                    mf_scaler.file_path as scaler_path,
+                    mf_encoder.file_path as encoder_path,
+                    mv.performance_metrics
+                FROM model_selections ms
+                JOIN ml_models m ON ms.model_id = m.id
+                LEFT JOIN model_versions mv ON ms.model_version_id = mv.id
+                LEFT JOIN model_files mf_scaler ON m.id = mf_scaler.model_id AND mf_scaler.file_type = 'scaler'
+                LEFT JOIN model_files mf_encoder ON m.id = mf_encoder.model_id AND mf_encoder.file_type = 'encoder'
+                WHERE ms.user_id = %s 
+                    AND ms.selection_type = %s
+                    AND ms.is_active = true
+                    AND m.status = 'active'
+            """
+            
+            cursor.execute(query, (user_id, selection_type))
+            result = cursor.fetchone()
+            
+            if result:
+                return {
+                    'model_id': result[0],
+                    'model_name': result[1],
+                    'model_type': result[2],
+                    'model_path': result[3],
+                    'scaler_path': result[4],
+                    'encoder_path': result[5],
+                    'performance_metrics': result[6]
+                }
+            
             return None
-        
-        cursor = conn.cursor()
-        
-        # Get user's model selection
-        query = """
-            SELECT 
-                m.id, m.model_name, m.model_type, m.model_path,
-                mf_scaler.file_path as scaler_path,
-            mf_encoder.file_path as encoder_path,
-            mv.performance_metrics
-            FROM model_selections ms
-            JOIN ml_models m ON ms.model_id = m.id
-            LEFT JOIN model_versions mv ON ms.model_version_id = mv.id
-            LEFT JOIN model_files mf_scaler ON m.id = mf_scaler.model_id AND mf_scaler.file_type = 'scaler'
-            LEFT JOIN model_files mf_encoder ON m.id = mf_encoder.model_id AND mf_encoder.file_type = 'encoder'
-        WHERE ms.user_id = %s 
-            AND ms.selection_type = %s
-            AND ms.is_active = true
-            AND m.status = 'active'
-        """
-        
-        cursor.execute(query, (user_id, selection_type))
-        result = cursor.fetchone()
-        
-        if result:
-            return {
-                'model_id': result[0],
-                'model_name': result[1],
-                'model_type': result[2],
-                'model_path': result[3],
-                'scaler_path': result[4],
-                'encoder_path': result[5],
-                'performance_metrics': result[6]
-            }
-        
-        cursor.close()
-        conn.close()
-        return None
         
     except Exception as e:
         logger.error(f"Error getting user selected model: {e}")
         return None
 
 def load_model_from_database(model_id: str) -> Tuple[Any, Dict[str, Any]]:
-    """Load model from database by ID"""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            raise Exception("Database connection failed")
-        
-        cursor = conn.cursor()
-        
-        # Get model files
-        query = """
-        SELECT file_type, file_path, file_size, file_hash
-        FROM model_files
-        WHERE model_id = %s AND upload_status = 'completed'
-        ORDER BY file_type
-        """
-        
-        cursor.execute(query, (model_id,))
-        files = cursor.fetchall()
-        
-        if not files:
-            raise Exception("No model files found")
-        
-        # Load model files
-        model_obj = None
-        scaler = None
-        label_encoder = None
-        metadata = {}
-        
-        for file_type, file_path, file_size, file_hash in files:
-            if os.path.exists(file_path):
-                if file_type == 'model':
-                    model_obj = joblib.load(file_path)
-                elif file_type == 'scaler':
-                    scaler = joblib.load(file_path)
-                elif file_type == 'encoder':
-                    label_encoder = joblib.load(file_path)
-                elif file_type == 'metadata':
-                    with open(file_path, 'r') as f:
-                        metadata = json.load(f)
-        
-        if model_obj is None:
-            raise Exception("Model file not found or could not be loaded")
-        
-        context = {
-            'model_id': model_id,
-            'scaler': scaler,
-            'label_encoder': label_encoder,
-            'metadata': metadata,
-            'loaded_at': time.time()
-        }
-        
-        cursor.close()
-        conn.close()
-        
-        return model_obj, context
-        
-    except Exception as e:
-        logger.error(f"Error loading model from database: {e}")
-        raise
+    """Load model from database by ID with thread safety"""
+    with _model_lock:
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get model files
+                query = """
+                SELECT file_type, file_path, file_size, file_hash
+                FROM model_files
+                WHERE model_id = %s AND upload_status = 'completed'
+                ORDER BY file_type
+                """
+                
+                cursor.execute(query, (model_id,))
+                files = cursor.fetchall()
+                
+                if not files:
+                    raise Exception("No model files found")
+                
+                # Load model files
+                model_obj = None
+                scaler = None
+                label_encoder = None
+                metadata = {}
+                
+                for file_type, file_path, file_size, file_hash in files:
+                    if os.path.exists(file_path):
+                        try:
+                            if file_type == 'model':
+                                model_obj = joblib.load(file_path)
+                            elif file_type == 'scaler':
+                                scaler = joblib.load(file_path)
+                            elif file_type == 'encoder':
+                                label_encoder = joblib.load(file_path)
+                            elif file_type == 'metadata':
+                                with open(file_path, 'r') as f:
+                                    metadata = json.load(f)
+                        except Exception as e:
+                            logger.warning(f"Failed to load {file_type} from {file_path}: {e}")
+                
+                if model_obj is None:
+                    raise Exception("Model file not found or could not be loaded")
+                
+                context = {
+                    'model_id': model_id,
+                    'scaler': scaler,
+                    'label_encoder': label_encoder,
+                    'metadata': metadata,
+                    'loaded_at': time.time()
+                }
+                
+                return model_obj, context
+            
+        except Exception as e:
+            logger.error(f"Error loading model from database: {e}")
+            raise
 
 def preprocess_flow_data(flow_data: Dict[str, Any]) -> np.ndarray:
     """Preprocess flow data for ML prediction"""
     try:
-        # Map flow data to feature array (84 features)
+        # Map flow data to feature array (77 features)
         features = [
             flow_data.get('flow_duration', 0),
             flow_data.get('total_fwd_packets', 0),
@@ -342,11 +349,11 @@ def model_info():
 @app.route('/models', methods=['GET'])
 def get_available_models():
     """Get available models for user"""
-        user_id = request.headers.get('X-User-ID')
+    user_id = request.headers.get('X-User-ID')
     
-        if not user_id:
-            return jsonify({'error': 'User ID required'}), 400
-        
+    if not user_id:
+        return jsonify({'error': 'User ID required'}), 400
+    
     try:
         conn = get_db_connection()
         if not conn:

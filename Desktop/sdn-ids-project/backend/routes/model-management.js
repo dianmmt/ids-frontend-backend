@@ -1,6 +1,6 @@
 import express from 'express';
 import { verifyToken } from '../services/authService.js';
-import { listModels, uploadModel, setActiveModel, setInactiveModel, deleteModel, downloadModel } from '../services/modelRegistryService.js';
+import { listModels, uploadModel, setActiveModel, setInactiveModel, deleteModel, getAllActiveModels } from '../services/modelRegistryService.js';
 import axios from 'axios';
 
 const router = express.Router();
@@ -34,12 +34,13 @@ router.get('/', authenticateToken, requireAdmin, async (req, res) => {
 // POST /api/models - upload model (base64)
 router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const { name, version, format, framework, description, base64Content, accuracy, precision_score, recall_score, f1_score, training_samples, test_samples } = req.body || {};
+    const { name, version, format, framework, model_type, description, base64Content, accuracy, precision_score, recall_score, f1_score, training_samples, test_samples } = req.body || {};
     const model = await uploadModel({
       name,
       version,
       format,
       framework,
+      model_type,
       description,
       base64Content,
       uploadedBy: req.user?.id || null,
@@ -56,39 +57,30 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/models/active - get all active models
+router.get('/active', authenticateToken, async (req, res) => {
+  try {
+    const activeModels = await getAllActiveModels();
+    res.json({ success: true, models: activeModels });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 // POST /api/models/:id/activate - set active and push to ML service
 router.post('/:id/activate', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     // Mark active in DB
     const active = await setActiveModel(id);
-    // Fetch bytes to send to ML service
-    const artifact = await downloadModel(id);
-    if (!artifact) return res.status(404).json({ success: false, message: 'Model not found' });
+    // Note: Download functionality removed - models are managed in database only
 
-    // Push to ML service (optional - continue even if ML service is not available)
-    const mlUrl = process.env.ML_API_URL || 'http://ml:5000';
-    try {
-      await axios.post(`${mlUrl}/model/load`, {
-        name: artifact.name,
-        version: artifact.version,
-        format: artifact.format,
-        framework: artifact.framework,
-        sha256: artifact.sha256,
-        size_bytes: artifact.size_bytes,
-        base64Content: artifact.content.toString('base64')
-      }, { timeout: 20000 });
-      
-      res.json({ success: true, model: active, message: 'Model activated and loaded into ML service' });
-    } catch (mlError) {
-      console.warn('ML service not available, model activated in database only:', mlError.message);
-    res.json({
-      success: true,
-        model: active, 
-        message: 'Model activated in database (ML service not available)',
-        warning: 'ML service connection failed - model is stored but not loaded for inference'
-      });
-    }
+    // Model activated in database - ML service integration removed
+    res.json({ 
+      success: true, 
+      model: active, 
+      message: 'Model activated successfully' 
+    });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
   }
@@ -116,20 +108,7 @@ router.delete('/:id', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// GET /api/models/:id/download - download model
-router.get('/:id/download', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const artifact = await downloadModel(id);
-    if (!artifact) return res.status(404).json({ success: false, message: 'Model not found' });
-    
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${artifact.name}_${artifact.version}.${artifact.format}"`);
-    res.send(artifact.content);
-  } catch (e) {
-    res.status(400).json({ success: false, message: e.message });
-  }
-});
+// Download functionality removed - models are managed in database only
 
 // GET /api/models/:id/info - get model information
 router.get('/:id/info', authenticateToken, requireAdmin, async (req, res) => {
@@ -153,14 +132,24 @@ router.post('/:id/select', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const { selection_type = 'primary' } = req.body;
+    const userId = req.user?.id;
     
-    // This would need to be implemented in modelRegistryService
-    // For now, just return success
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'User ID required' });
+    }
+    
+    // Import the user model preference service
+    const { UserModelPreferenceService } = await import('../services/userModelPreferenceService.js');
+    
+    // Set user's model preference
+    const result = await UserModelPreferenceService.setUserModelPreference(userId, id, selection_type);
+    
     res.json({
       success: true,
       message: 'Model selected successfully',
       model_id: id,
-      selection_type
+      selection_type,
+      preference: result
     });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
@@ -175,11 +164,15 @@ router.get('/user/selected', authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, message: 'User ID required' });
     }
     
-    // This would need to be implemented in modelRegistryService
-    // For now, return empty array
+    // Import the user model preference service
+    const { UserModelPreferenceService } = await import('../services/userModelPreferenceService.js');
+    
+    // Get user's model preferences
+    const preferences = await UserModelPreferenceService.getUserModelPreferences(userId);
+    
     res.json({
       success: true,
-      selections: []
+      selections: preferences
     });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });

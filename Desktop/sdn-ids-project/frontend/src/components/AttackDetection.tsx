@@ -58,11 +58,25 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
   const reportRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  // Persist selected model to localStorage for header display
+  useEffect(() => {
+    if (!selectedModelId) {
+      localStorage.removeItem('selectedModelId');
+      localStorage.removeItem('selectedModelName');
+      return;
+    }
+    const model = activeModels.find(m => m.id === selectedModelId);
+    if (model) {
+      localStorage.setItem('selectedModelId', selectedModelId);
+      localStorage.setItem('selectedModelName', model.name);
+    }
+  }, [selectedModelId, activeModels]);
+
   // Fetch active models
   const fetchActiveModels = async () => {
     try {
       console.log('Fetching active models...');
-      const response = await fetch('/api/ml/models', {
+      const response = await fetch('/api/models/active', {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
         }
@@ -70,18 +84,41 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
       console.log('Response status:', response.status);
       if (response.ok) {
         const data = await response.json();
-        console.log('Models data:', data);
-        const active = data.models?.filter((model: any) => model.is_active) || [];
+        console.log('Active models data:', data);
+        const active = data.models || [];
         console.log('Active models:', active);
         setActiveModels(active);
         if (active.length > 0 && !selectedModelId) {
           setSelectedModelId(active[0].id);
         }
       } else {
-        console.error('Failed to fetch models:', response.status, response.statusText);
+        console.error('Failed to fetch active models:', response.status, response.statusText);
       }
     } catch (err) {
       console.error('Failed to fetch active models:', err);
+    }
+  };
+
+  // Save user's model selection
+  const saveModelSelection = async (modelId: string) => {
+    try {
+      const response = await fetch(`/api/models/${modelId}/select`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+        },
+        body: JSON.stringify({ selection_type: 'primary' })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Model selection saved:', result);
+      } else {
+        console.error('Failed to save model selection');
+      }
+    } catch (error) {
+      console.error('Error saving model selection:', error);
     }
   };
 
@@ -91,6 +128,9 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
       alert('Please select a model first');
       return;
     }
+
+    // Save the model selection first
+    await saveModelSelection(selectedModelId);
 
     try {
       const sampleData = {
@@ -117,13 +157,39 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
 
       if (response.ok) {
         const result = await response.json();
-        alert(`Model Test Result:\nAttack: ${result.is_malicious ? 'Yes' : 'No'}\nConfidence: ${(result.confidence * 100).toFixed(1)}%\nAttack Type: ${result.attack_type}`);
+        alert(`Model Test Result:\nAttack: ${result.is_malicious ? 'Yes' : 'No'}\nConfidence: ${(result.confidence * 100).toFixed(1)}%\nAttack Type: ${result.prediction}`);
       } else {
-        alert('Failed to test model');
+        // Parse error response for more details
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.error || 'Failed to test model';
+        
+        // Provide more detailed error guidance
+        let detailedMessage = `Model Test Failed: ${errorMessage}\n\n`;
+        detailedMessage += "Possible reasons:\n";
+        detailedMessage += "1. No active model selected\n";
+        detailedMessage += "2. ML service not running\n";
+        detailedMessage += "3. Authentication issues\n";
+        detailedMessage += "4. Network connectivity problem\n\n";
+        detailedMessage += "Recommended actions:\n";
+        detailedMessage += "- Check Model Management page\n";
+        detailedMessage += "- Verify model is activated\n";
+        detailedMessage += "- Restart ML services\n";
+        detailedMessage += "- Check your network connection";
+
+        alert(detailedMessage);
+        console.error('Model test error:', errorData);
       }
     } catch (err) {
       console.error('Model test error:', err);
-      alert('Error testing model');
+      
+      let errorMessage = 'Error testing model';
+      if (err instanceof TypeError) {
+        errorMessage += ': Network error. Check your connection.';
+      } else if (err instanceof Error) {
+        errorMessage += `: ${err.message}`;
+      }
+
+      alert(errorMessage);
     }
   };
 
@@ -175,8 +241,34 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
       });
 
       eventSourceRef.current.onmessage = (event) => {
-        const newAttack: AttackEvent = JSON.parse(event.data);
-        setAttacks(prev => [newAttack, ...prev.slice(0, 49)]);
+        try {
+          const payload = JSON.parse(event.data);
+          // Ignore non-attack messages (e.g., connection/heartbeat) that lack a stable id
+          if (!payload || !payload.id) return;
+
+          const newAttack: AttackEvent = {
+            id: payload.id,
+            timestamp: payload.timestamp || new Date().toISOString(),
+            source_ip: payload.source_ip || 'Unknown',
+            destination_ip: payload.destination_ip || 'Unknown',
+            attack_type: payload.attack_type || 'Anomaly',
+            severity: payload.severity || 'low',
+            confidence: payload.confidence ?? 0,
+            status: payload.status || 'detected',
+            probabilities: payload.probabilities || {},
+            flow_data: {
+              protocol: payload.flow_data?.protocol || 'Unknown',
+              src_port: payload.flow_data?.src_port || 0,
+              dst_port: payload.flow_data?.dst_port || 0,
+              packet_count: payload.flow_data?.packet_count || 0,
+              byte_count: payload.flow_data?.byte_count || 0
+            }
+          };
+
+          setAttacks(prev => [newAttack, ...prev.filter(a => a.id !== newAttack.id).slice(0, 49)]);
+        } catch (e) {
+          // Malformed message – ignore
+        }
       };
 
       eventSourceRef.current.onerror = () => {
@@ -408,7 +500,13 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
               <Shield size={20} className="text-gray-400" />
               <select
                 value={selectedModelId}
-                onChange={e => setSelectedModelId(e.target.value)}
+                onChange={async (e) => {
+                  const newModelId = e.target.value;
+                  setSelectedModelId(newModelId);
+                  if (newModelId) {
+                    await saveModelSelection(newModelId);
+                  }
+                }}
                 className="bg-gray-700/50 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
                 disabled={activeModels.length === 0}
               >
@@ -417,22 +515,28 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                 ) : (
                   activeModels.map(model => (
                     <option key={model.id} value={model.id}>
-                      {model.name} v{model.version} ({model.framework}) - {(model.accuracy * 100).toFixed(1)}%
+                      {model.name} v{model.version} ({model.framework}) - {(model.accuracy ? (model.accuracy * 100).toFixed(1) : 'N/A')}%
                     </option>
                   ))
                 )}
               </select>
-              
-
+              <button
+                onClick={testSelectedModel}
+                disabled={!selectedModelId}
+                className="group flex items-center justify-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 text-white text-sm rounded-lg transition-all duration-300 ease-in-out transform hover:scale-105 disabled:cursor-not-allowed disabled:scale-100 shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
+              >
+                <Shield size={18} className="text-white/80 group-hover:animate-pulse group-disabled:animate-none" />
+                <span>Test Model</span>
+              </button>
             </div>
           </div>
           <button
-          onClick={handleExport}
-          className="flex items-center justify-center space-x-3 px-3 py-1.5 rounded-md font-medium text-xs bg-blue-500 hover:bg-blue-600 text-white shadow-sm transition-colors"
-        >
-          <Download size={16} />
-          <span>Export Report</span>
-        </button>
+            onClick={handleExport}
+            className="group flex items-center justify-center space-x-3 px-4 py-2 rounded-lg font-medium text-sm bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white shadow-md hover:shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50"
+          >
+            <Download size={18} className="text-white/80 group-hover:animate-pulse" />
+            <span>Export Report</span>
+          </button>
 
         </div>
       </div>

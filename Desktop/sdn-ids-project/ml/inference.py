@@ -9,33 +9,40 @@ import pickle
 import joblib
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional, Union
 import json
+import logging
+from functools import lru_cache
+from standardized_preprocessing import standardize_flow_data, validate_feature_count
 
-def preprocess_input(X, scaler):
+# Configure logging
+logger = logging.getLogger(__name__)
+
+def preprocess_input(X: np.ndarray, scaler: Optional[Any]) -> np.ndarray:
     """Preprocess input data with scaler if available"""
     if scaler is not None:
         try:
             return scaler.transform(X)
         except Exception as e:
-            print(f"Warning: Scaler failed, using raw features: {e}")
+            logger.warning(f"Scaler failed, using raw features: {e}")
             return X
     return X
 
+@lru_cache(maxsize=1)
 def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
-    """Load model and preprocessing artifacts from folder"""
+    """Load model and preprocessing artifacts from folder with caching"""
     model_obj = None
     scaler = None
     label_encoder = None
     framework = 'unknown'
     
-    # Try to load different model formats
+    # Try to load different model formats in order of preference
     model_files = {
+        'joblib': 'random_forest_model.joblib',
+        'joblib_alt': 'model.joblib',
         'pkl': 'model.pkl',
-        'joblib': 'model.joblib',
-        'h5': 'model.h5',
         'pkl_alt': 'sdn_ids_model.pkl',
-        'joblib_alt': 'random_forest_model.joblib'
+        'h5': 'model.h5'
     }
     
     # Try to load model
@@ -56,17 +63,17 @@ def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
                     model_obj = keras.models.load_model(model_path)
                     framework = 'tensorflow'
                 
-                print(f"✅ Model loaded from {model_path} ({framework})")
+                logger.info(f"Model loaded from {model_path} ({framework})")
                 break
             except Exception as e:
-                print(f"❌ Failed to load {model_path}: {e}")
+                logger.warning(f"Failed to load {model_path}: {e}")
                 continue
     
     if model_obj is None:
         raise FileNotFoundError("No valid model file found in folder")
     
     # Try to load scaler
-    scaler_files = ['scaler.pkl', 'scaler.joblib']
+    scaler_files = ['scaler.joblib', 'scaler.pkl']
     for scaler_file in scaler_files:
         scaler_path = os.path.join(folder_path, scaler_file)
         if os.path.exists(scaler_path):
@@ -76,13 +83,13 @@ def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
                         scaler = pickle.load(f)
                 else:
                     scaler = joblib.load(scaler_path)
-                print(f"✅ Scaler loaded from {scaler_path}")
+                logger.info(f"Scaler loaded from {scaler_path}")
                 break
             except Exception as e:
-                print(f"❌ Failed to load scaler {scaler_path}: {e}")
+                logger.warning(f"Failed to load scaler {scaler_path}: {e}")
     
     # Try to load label encoder
-    encoder_files = ['label_encoder.pkl', 'label_encoder.joblib']
+    encoder_files = ['label_encoder.joblib', 'label_encoder.pkl']
     for encoder_file in encoder_files:
         encoder_path = os.path.join(folder_path, encoder_file)
         if os.path.exists(encoder_path):
@@ -92,10 +99,10 @@ def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
                         label_encoder = pickle.load(f)
                 else:
                     label_encoder = joblib.load(encoder_path)
-                print(f"✅ Label encoder loaded from {encoder_path}")
+                logger.info(f"Label encoder loaded from {encoder_path}")
                 break
             except Exception as e:
-                print(f"❌ Failed to load label encoder {encoder_path}: {e}")
+                logger.warning(f"Failed to load label encoder {encoder_path}: {e}")
     
     # Load metadata if available
     metadata_path = os.path.join(folder_path, 'metadata.json')
@@ -105,7 +112,7 @@ def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
         except Exception as e:
-            print(f"❌ Failed to load metadata: {e}")
+            logger.warning(f"Failed to load metadata: {e}")
     
     context = {
         'model': model_obj,
@@ -118,7 +125,7 @@ def load_model_from_folder(folder_path: str) -> Tuple[Any, Dict[str, Any]]:
     
     return model_obj, context
 
-def predict(X, model, label_encoder):
+def predict(X: np.ndarray, model: Any, label_encoder: Optional[Any]) -> Union[str, np.ndarray]:
     """Make prediction with model and label encoder"""
     try:
         # Get prediction
@@ -153,7 +160,7 @@ def predict(X, model, label_encoder):
                     # Multiple predictions
                     prediction = label_encoder.inverse_transform(prediction)
             except Exception as e:
-                print(f"Warning: Label encoder failed: {e}")
+                logger.warning(f"Label encoder failed: {e}")
                 prediction = str(prediction[0]) if len(prediction) > 0 else 'unknown'
         else:
             # Convert to string if no label encoder
@@ -162,17 +169,28 @@ def predict(X, model, label_encoder):
         return prediction
         
     except Exception as e:
-        print(f"Error in prediction: {e}")
+        logger.error(f"Error in prediction: {e}")
         return 'unknown'
 
-def predict_threat(features: Dict[str, float], model) -> Dict[str, Any]:
-    """Predict threat for given features"""
+def predict_threat(features: Dict[str, float], model: Any, scaler: Optional[Any] = None, label_encoder: Optional[Any] = None) -> Dict[str, Any]:
+    """Predict threat for given features using standardized preprocessing"""
     try:
-        # Convert features to array
-        feature_array = np.array(list(features.values())).reshape(1, -1)
+        # Use standardized preprocessing
+        feature_array = standardize_flow_data(features)
         
-        # Handle infinite values
-        feature_array = np.nan_to_num(feature_array, nan=0.0, posinf=0.0, neginf=0.0)
+        # Validate feature count
+        if not validate_feature_count(feature_array):
+            logger.warning("Feature count validation failed, using fallback")
+            # Get actual feature count from model
+            feature_count = model.n_features_in_ if hasattr(model, 'n_features_in_') else 77
+            feature_array = np.zeros((1, feature_count), dtype=np.float32)
+        
+        # Apply scaler if available
+        if scaler is not None:
+            try:
+                feature_array = scaler.transform(feature_array)
+            except Exception as e:
+                logger.warning(f"Scaler failed: {e}")
         
         # Get prediction
         prediction = model.predict(feature_array)[0]
@@ -184,7 +202,20 @@ def predict_threat(features: Dict[str, float], model) -> Dict[str, Any]:
                 probabilities = model.predict_proba(feature_array)[0]
                 confidence = float(np.max(probabilities))
             except Exception as e:
-                print(f"Warning: Could not get probabilities: {e}")
+                logger.warning(f"Could not get probabilities: {e}")
+        
+        # Apply label encoder if available
+        if label_encoder is not None:
+            try:
+                if isinstance(prediction, (np.integer, int)):
+                    prediction = label_encoder.inverse_transform([prediction])[0]
+                else:
+                    prediction = str(prediction)
+            except Exception as e:
+                logger.warning(f"Label encoder failed: {e}")
+                prediction = str(prediction)
+        else:
+            prediction = str(prediction)
         
         # Determine if it's malicious
         is_malicious = False
@@ -203,7 +234,7 @@ def predict_threat(features: Dict[str, float], model) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        print(f"Error in threat prediction: {e}")
+        logger.error(f"Error in threat prediction: {e}")
         return {
             'prediction': 'unknown',
             'is_malicious': False,
@@ -217,25 +248,26 @@ def main():
         model_folder = os.getenv('MODEL_FOLDER', '.')
         model, context = load_model_from_folder(model_folder)
         
-        print(f"Model loaded: {type(model).__name__}")
-        print(f"Framework: {context['framework']}")
-        print(f"Has scaler: {context['scaler'] is not None}")
-        print(f"Has label encoder: {context['label_encoder'] is not None}")
+        logger.info(f"Model loaded: {type(model).__name__}")
+        logger.info(f"Framework: {context['framework']}")
+        logger.info(f"Has scaler: {context['scaler'] is not None}")
+        logger.info(f"Has label encoder: {context['label_encoder'] is not None}")
         
-        # Test prediction
+        # Test prediction with standardized preprocessing
         test_features = {
-            'flow_duration': 10.5,
-            'total_fwd_packets': 100,
-            'total_backward_packets': 50,
-            'total_length_of_fwd_packets': 50000,
-            'total_length_of_bwd_packets': 25000
+            'duration': 10.5,
+            'packet_count': 100,
+            'byte_count': 50000,
+            'avg_packet_size': 500,
+            'source_ip': '192.168.1.1',
+            'destination_ip': '10.0.0.1'
         }
         
-        result = predict_threat(test_features, model)
-        print(f"Test prediction: {result}")
+        result = predict_threat(test_features, model, context.get('scaler'), context.get('label_encoder'))
+        logger.info(f"Test prediction: {result}")
         
     except Exception as e:
-        print(f"Error in main: {e}")
+        logger.error(f"Error in main: {e}")
 
 if __name__ == '__main__':
     main()

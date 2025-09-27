@@ -6,14 +6,22 @@ import numpy as np
 import json
 import traceback
 import os
+import base64
+import hashlib
 from datetime import datetime
+from typing import Dict, Any, Optional, Tuple
+import logging
 
 # Import your inference script
 import inference
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
 
-# Global model variable
+# Global model variable with thread safety
 model = None
 active_model_meta = {
     'name': None,
@@ -23,13 +31,26 @@ active_model_meta = {
     'sha256': None
 }
 
-def load_model_from_bytes(content: bytes, fmt: str):
+# Cache for model loading to avoid repeated loads
+_model_cache = {}
+
+def load_model_from_bytes(content: bytes, fmt: str) -> bool:
     """Load model from bytes according to format (pkl/h5/joblib)."""
     global model
+    
+    # Create cache key from content hash
+    content_hash = hashlib.sha256(content).hexdigest()
+    cache_key = f"{fmt}_{content_hash}"
+    
+    # Check cache first
+    if cache_key in _model_cache:
+        model = _model_cache[cache_key]
+        logger.info(f"Model loaded from cache: {cache_key}")
+        return True
+    
     try:
         if fmt == 'pkl':
             model = pickle.loads(content)
-            return True
         elif fmt == 'h5':
             # Lazy import to avoid heavy deps unless needed
             import io
@@ -37,18 +58,22 @@ def load_model_from_bytes(content: bytes, fmt: str):
             from tensorflow import keras
             bio = io.BytesIO(content)
             model = keras.models.load_model(bio)
-            return True
         elif fmt == 'joblib':
             # Lazy import to avoid heavy deps unless needed
             import joblib
             import io
             bio = io.BytesIO(content)
             model = joblib.load(bio)
-            return True
         else:
-            raise ValueError('Unsupported format')
+            raise ValueError(f'Unsupported format: {fmt}')
+        
+        # Cache the loaded model
+        _model_cache[cache_key] = model
+        logger.info(f"Model loaded and cached: {cache_key}")
+        return True
+        
     except Exception as e:
-        print(f"❌ Error loading model from bytes: {str(e)}")
+        logger.error(f"Error loading model from bytes: {str(e)}")
         return False
 
 @app.route('/health', methods=['GET'])
@@ -71,6 +96,7 @@ def load_model():
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
+        # Extract and validate parameters
         name = data.get('name', 'Unknown')
         version = data.get('version', '1.0.0')
         fmt = data.get('format', 'pkl')
@@ -81,9 +107,21 @@ def load_model():
         if not base64_content:
             return jsonify({'error': 'No model content provided'}), 400
         
+        # Validate format
+        if fmt not in ['pkl', 'h5', 'joblib']:
+            return jsonify({'error': f'Unsupported format: {fmt}'}), 400
+        
         # Decode base64 content
-        import base64
-        content = base64.b64decode(base64_content)
+        try:
+            content = base64.b64decode(base64_content)
+        except Exception as e:
+            return jsonify({'error': f'Invalid base64 content: {str(e)}'}), 400
+        
+        # Verify SHA256 if provided
+        if sha256:
+            content_hash = hashlib.sha256(content).hexdigest()
+            if content_hash != sha256:
+                return jsonify({'error': 'SHA256 hash mismatch'}), 400
         
         # Load model
         if load_model_from_bytes(content, fmt):
@@ -92,9 +130,10 @@ def load_model():
                 'version': version,
                 'format': fmt,
                 'framework': framework,
-                'sha256': sha256
+                'sha256': sha256 or hashlib.sha256(content).hexdigest()
             }
             
+            logger.info(f"Model loaded successfully: {name} v{version}")
             return jsonify({
                 'success': True,
                 'message': f'Model {name} v{version} loaded successfully',
@@ -104,7 +143,7 @@ def load_model():
             return jsonify({'error': 'Failed to load model'}), 500
             
     except Exception as e:
-        print(f"❌ Error loading model: {str(e)}")
+        logger.error(f"Error loading model: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/predict', methods=['POST'])
@@ -130,7 +169,7 @@ def predict():
         })
         
     except Exception as e:
-        print(f"❌ Error in prediction: {str(e)}")
+        logger.error(f"Error in prediction: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/predict/batch', methods=['POST'])
@@ -146,34 +185,44 @@ def predict_batch():
         if not flows:
             return jsonify({'error': 'No flows provided'}), 400
         
+        # Limit batch size to prevent memory issues
+        max_batch_size = 1000
+        if len(flows) > max_batch_size:
+            return jsonify({'error': f'Batch size too large. Maximum {max_batch_size} flows allowed.'}), 400
+        
         predictions = []
+        successful_predictions = 0
+        
         for i, flow_data in enumerate(flows):
             try:
                 result = inference.predict_threat(flow_data, model)
-            predictions.append({
+                predictions.append({
                     'flow_id': flow_data.get('flow_id', f'flow_{i}'),
-                'prediction': result.get('prediction', 'unknown'),
-                'is_malicious': result.get('is_malicious', False),
+                    'prediction': result.get('prediction', 'unknown'),
+                    'is_malicious': result.get('is_malicious', False),
                     'confidence': result.get('confidence', 0.0)
                 })
+                successful_predictions += 1
             except Exception as e:
+                logger.warning(f"Error processing flow {i}: {str(e)}")
                 predictions.append({
                     'flow_id': flow_data.get('flow_id', f'flow_{i}'),
                     'prediction': 'unknown',
                     'is_malicious': False,
                     'confidence': 0.0,
                     'error': str(e)
-            })
+                })
         
         return jsonify({
             'success': True,
             'predictions': predictions,
             'total_flows': len(flows),
+            'successful_predictions': successful_predictions,
             'model_meta': active_model_meta
         })
         
     except Exception as e:
-        print(f"❌ Error in batch prediction: {str(e)}")
+        logger.error(f"Error in batch prediction: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/test', methods=['GET'])
@@ -276,7 +325,7 @@ def test_prediction():
         })
         
     except Exception as e:
-        print(f"❌ Error in test prediction: {str(e)}")
+        logger.error(f"Error in test prediction: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.errorhandler(404)
@@ -288,7 +337,7 @@ def internal_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
 if __name__ == '__main__':
-    print("🚀 Starting ML Service...")
+    logger.info("🚀 Starting ML Service...")
     app.run(host='0.0.0.0', port=5000, debug=True)
 
 

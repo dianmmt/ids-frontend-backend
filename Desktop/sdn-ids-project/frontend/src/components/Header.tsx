@@ -68,7 +68,7 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, currentView, curren
               <span>System Online</span>
             </div>
             <span className="text-gray-600">•</span>
-            <span>{viewSubtitles[currentView]}</span>
+            
           </div>
         </div>
         
@@ -81,7 +81,12 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, currentView, curren
             </div>
             <div className="flex items-center space-x-2">
               <Brain className="h-4 w-4 text-blue-400" />
-              <span className="text-sm text-white font-medium">Models Active</span>
+              <span className="text-sm text-white font-medium">
+                {(() => {
+                  const name = typeof window !== 'undefined' ? localStorage.getItem('selectedModelName') : null;
+                  return name ? `${name} in use` : 'No model selected';
+                })()}
+              </span>
             </div>
             <div className="flex items-center space-x-2">
               <Server className="h-4 w-4 text-purple-400" />

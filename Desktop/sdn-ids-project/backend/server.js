@@ -9,6 +9,8 @@ import rateLimit from 'express-rate-limit';
 import authRoutes from './routes/auth.js';
 import performanceRoutes from './routes/performance.js';
 import mlRoutes from './routes/ml.js';
+import mlDirectRoutes from './routes/ml-direct.js';
+import mlUserAwareRoutes from './routes/ml-user-aware.js';
 import attacksRoutes from './routes/attacks.js';
 import topologyRoutes from './routes/topology.js';
 import dashboardRoutes from './routes/dashboard.js';
@@ -17,6 +19,7 @@ import pipelineRoutes from './routes/pipeline.js';
 import ipAnalyzerRoutes from './routes/ip-analyzer.js';
 import modelManagementRoutes from './routes/model-management.js';
 import { initializeDatabase, closeDatabase } from './services/database.js';
+import DatabaseInitializer from './services/databaseInitializer.js';
 import performanceScheduler from './services/performanceScheduler.js';
 import ServiceOrchestrator from './services/serviceOrchestrator.js';
 import config from './services/config.js';
@@ -25,10 +28,23 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
+// Build allowed origins list from config/env (comma-separated supported)
+const allowedOrigins = typeof config.server.cors.origin === "string"
+  ? config.server.cors.origin.split(",").map(o => o.trim()).filter(Boolean)
+  : Array.isArray(config.server.cors.origin)
+    ? config.server.cors.origin
+    : [];
+
 const io = new Server(server, {
   cors: {
-    origin: config.server.cors.origin,
-    methods: ["GET", "POST"]
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      const isLocalhost = /^http:\/\/(localhost|127\.0\.0\.1)(:\\d+)?$/.test(origin);
+      if (allowedOrigins.includes(origin) || isLocalhost) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 const pool = new Pool(config.database);
@@ -50,15 +66,47 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use('/api', limiter);
+// Apply rate limiting to all API routes except long-lived SSE stream
+app.use('/api', (req, res, next) => {
+  const url = req.originalUrl || '';
+  const path = req.path || '';
+  const isSseStream = req.method === 'GET' && (
+    url === '/api/attacks/stream' ||
+    path === '/attacks/stream'
+  );
+  if (isSseStream) return next();
+  return limiter(req, res, next);
+});
 
 // CORS configuration
+console.log('[CORS] Allowed origins:', allowedOrigins);
+
 const corsOptions = {
-  origin: config.server.cors.origin || process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function (origin, callback) {
+    console.log('[CORS] Request origin:', origin);
+    // Allow non-browser requests (e.g., curl, Postman) with no origin
+    if (!origin) return callback(null, true);
+    const isLocalhost = /^http:\/\/(localhost|127\.0\.0\.1)(:\\d+)?$/.test(origin);
+    if (allowedOrigins.indexOf(origin) !== -1 || isLocalhost) {
+      console.log('[CORS] Origin allowed:', origin);
+      return callback(null, true);
+    }
+    console.log('[CORS] Origin rejected:', origin);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+  ]
 };
+
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Body parsing middleware (allow large model uploads)
 app.use(express.json({ limit: '200mb' }));
@@ -85,6 +133,8 @@ pool.connect()
 app.use('/api/auth', authRoutes);
 app.use('/api/performance', performanceRoutes);
 app.use('/api/ml', mlRoutes);
+app.use('/api/ml-direct', mlDirectRoutes);
+app.use('/api/ml-user-aware', mlUserAwareRoutes);
 app.use('/api/attacks', attacksRoutes);
 app.use('/api/topology', topologyRoutes);
 app.use('/api/dashboard', dashboardRoutes);
@@ -99,21 +149,20 @@ app.get('/api/admin/performance/counts', async (req, res) => {
   try {
     const queries = [
       pool.query("SELECT COUNT(*)::bigint AS count FROM performance_metrics"),
-      pool.query("SELECT COUNT(*)::bigint AS count FROM ml_performance"),
-      pool.query("SELECT COUNT(*)::bigint AS count FROM database_performance"),
+      pool.query("SELECT COUNT(*)::bigint AS count FROM performance_metrics WHERE component = 'ml'"),
+      pool.query("SELECT COUNT(*)::bigint AS count FROM performance_metrics WHERE component = 'database'"),
       pool.query("SELECT COUNT(*)::bigint AS count FROM network_statistics"),
-      pool.query("SELECT COUNT(*)::bigint AS count FROM system_health"),
       pool.query("SELECT COUNT(*)::bigint AS count FROM performance_alerts")
     ];
 
-    const [metrics, ml, db, net, health, alerts] = await Promise.all(queries);
+    const [metrics, ml, db, net, alerts] = await Promise.all(queries);
 
     res.json({
       performance_metrics: Number(metrics.rows[0].count),
-      ml_performance: Number(ml.rows[0].count),
-      database_performance: Number(db.rows[0].count),
+      ml_metrics: Number(ml.rows[0].count),
+      database_metrics: Number(db.rows[0].count),
       network_statistics: Number(net.rows[0].count),
-      system_health: Number(health.rows[0].count),
+      system_health: 1, // System health is calculated on-demand, not stored
       performance_alerts: Number(alerts.rows[0].count)
     });
   } catch (error) {
@@ -171,8 +220,20 @@ io.on('connection', (socket) => {
   // Simulate real-time updates
   const interval = setInterval(async () => {
     try {
-      const dashboardResult = await pool.query('SELECT get_dashboard_summary()');
-      socket.emit('dashboard_update', dashboardResult.rows[0].get_dashboard_summary);
+      // Get dashboard summary data
+      const [flowsCount, attacksCount, nodesCount] = await Promise.all([
+        pool.query('SELECT COUNT(*)::bigint AS count FROM flows'),
+        pool.query("SELECT COUNT(*)::bigint AS count FROM attack_events WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'"),
+        pool.query('SELECT COUNT(*)::bigint AS count FROM network_nodes')
+      ]);
+      
+      const dashboardSummary = {
+        flows: Number(flowsCount.rows[0].count),
+        attacks_24h: Number(attacksCount.rows[0].count),
+        nodes: Number(nodesCount.rows[0].count)
+      };
+      
+      socket.emit('dashboard_update', dashboardSummary);
       
       const attacksResult = await pool.query(`
         SELECT * FROM attack_events 
@@ -266,6 +327,10 @@ async function startServer() {
     // Initialize database connection
     await initializeDatabase();
     console.log('✓ Database connection established');
+    
+    // Initialize database tables and default data
+    await DatabaseInitializer.initialize();
+    console.log('✓ Database initialization completed');
     
     // Start the server
     server.listen(PORT, () => {

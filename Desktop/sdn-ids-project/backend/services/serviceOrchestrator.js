@@ -31,7 +31,16 @@ export class ServiceOrchestrator {
       
       console.log('[ServiceOrchestrator] Starting pipeline processor...');
       this.services.processor = new PipelineProcessor();
-      await this.services.processor.start();
+      
+      // Check if ML functionality is available
+      if (this.services.processor.mlPredictor.isPythonAvailable()) {
+        await this.services.processor.start();
+        console.log('[ServiceOrchestrator] Pipeline processor started with ML support');
+      } else {
+        console.warn('[ServiceOrchestrator] Python not available - pipeline processor started without ML support');
+        // Start processor but it will use fallback predictions
+        await this.services.processor.start();
+      }
       
       await this.delay(this.startupDelay);
       

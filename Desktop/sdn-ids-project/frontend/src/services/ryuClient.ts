@@ -54,7 +54,7 @@ class RyuClient {
   private apiBaseUrl: string;
   private eventHandlers: Map<string, Function[]> = new Map();
 
-  constructor(serverUrl: string = 'http://localhost:3001') {
+  constructor(serverUrl: string = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3001') {
     this.apiBaseUrl = serverUrl;
   }
 
@@ -331,6 +331,6 @@ class RyuClient {
 }
 
 // Create and export a singleton instance
-const ryuClient = new RyuClient();
+const ryuClient = new RyuClient((import.meta as any).env?.VITE_API_BASE_URL);
 export default ryuClient;
 

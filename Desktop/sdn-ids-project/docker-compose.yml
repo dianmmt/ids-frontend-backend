@@ -1,0 +1,93 @@
+version: '3.3'
+
+services:
+  db:
+    image: postgres:16
+    container_name: sdn_ids_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sdn_ids
+      POSTGRES_USER: sdn_user
+      POSTGRES_PASSWORD: sdn_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./database/init_scripts.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sdn_user -d sdn_ids"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sdn_ids_backend
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: sdn_ids
+      DB_USER: sdn_user
+      DB_PASSWORD: sdn_password
+      FRONTEND_URL: http://localhost:3000
+      CORS_ORIGIN: http://localhost:5173,http://localhost:3000,http://frontend:5173,http://sdn_ids_frontend:5173
+      ML_ENABLED: "true"
+    ports:
+      - "3001:3001"
+    volumes:
+      # Live reload: mount local backend code
+      - ./backend:/app
+      - ./ml:/app/ml  # Mount ML directory for direct access
+      - /app/node_modules
+    command: ["nodemon", "server.js"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: sdn_ids_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:3001/api
+      VITE_DEV_SERVER_HOST: 0.0.0.0
+    ports:
+      - "3000:5173"
+    volumes:
+      # Live reload: mount local frontend code
+      - ./frontend:/app
+      - /app/node_modules
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: sdn_ids_pgadmin
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin1234
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: 'True'
+      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: 10
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  db_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+

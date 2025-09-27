@@ -14,6 +14,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
 import pandas as pd
+from functools import lru_cache
+import threading
 
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -31,123 +33,84 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Global variables for model and context
+# Global variables for model and context with thread safety
 model = None
 model_context = None
 model_loaded = False
+_model_lock = threading.Lock()
+
+# Cache for preprocessing to avoid repeated work
+_preprocessing_cache = {}
 
 def load_ml_model():
-    """Load the ML model and preprocessing artifacts"""
+    """Load the ML model and preprocessing artifacts with thread safety"""
     global model, model_context, model_loaded
     
-    try:
-        model_folder = os.getenv('MODEL_FOLDER', '.')
-        logger.info(f"Loading model from folder: {model_folder}")
-        
-        model, model_context = load_model_from_folder(model_folder)
-        model_loaded = True
-        
-        logger.info(f"Model loaded successfully. Framework: {model_context.get('framework', 'unknown')}")
-        logger.info(f"Model folder: {model_context.get('folder', 'unknown')}")
-        logger.info(f"Has scaler: {model_context.get('scaler') is not None}")
-        logger.info(f"Has label encoder: {model_context.get('label_encoder') is not None}")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to load model: {e}")
-        model_loaded = False
-        return False
+    with _model_lock:
+        try:
+            model_folder = os.getenv('MODEL_FOLDER', '.')
+            logger.info(f"Loading model from folder: {model_folder}")
+            
+            model, model_context = load_model_from_folder(model_folder)
+            model_loaded = True
+            
+            logger.info(f"Model loaded successfully. Framework: {model_context.get('framework', 'unknown')}")
+            logger.info(f"Model folder: {model_context.get('folder', 'unknown')}")
+            logger.info(f"Has scaler: {model_context.get('scaler') is not None}")
+            logger.info(f"Has label encoder: {model_context.get('label_encoder') is not None}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to load model: {e}")
+            model_loaded = False
+            return False
 
+@lru_cache(maxsize=1000)
 def preprocess_flow_data(flow_data: Dict[str, Any]) -> np.ndarray:
-    """Preprocess flow data for ML prediction"""
+    """Preprocess flow data for ML prediction with caching"""
     try:
-        # Map flow data to feature array
-        features = [
-            flow_data.get('flow_duration', 0),
-            flow_data.get('total_fwd_packets', 0),
-            flow_data.get('total_backward_packets', 0),
-            flow_data.get('total_length_of_fwd_packets', 0),
-            flow_data.get('total_length_of_bwd_packets', 0),
-            flow_data.get('fwd_packet_length_max', 0),
-            flow_data.get('fwd_packet_length_min', 0),
-            flow_data.get('fwd_packet_length_mean', 0),
-            flow_data.get('fwd_packet_length_std', 0),
-            flow_data.get('bwd_packet_length_max', 0),
-            flow_data.get('bwd_packet_length_min', 0),
-            flow_data.get('bwd_packet_length_mean', 0),
-            flow_data.get('bwd_packet_length_std', 0),
-            flow_data.get('flow_bytes_per_second', 0),
-            flow_data.get('flow_packets_per_second', 0),
-            flow_data.get('flow_iat_mean', 0),
-            flow_data.get('flow_iat_std', 0),
-            flow_data.get('flow_iat_max', 0),
-            flow_data.get('flow_iat_min', 0),
-            flow_data.get('fwd_iat_total', 0),
-            flow_data.get('fwd_iat_mean', 0),
-            flow_data.get('fwd_iat_std', 0),
-            flow_data.get('fwd_iat_max', 0),
-            flow_data.get('fwd_iat_min', 0),
-            flow_data.get('bwd_iat_total', 0),
-            flow_data.get('bwd_iat_mean', 0),
-            flow_data.get('bwd_iat_std', 0),
-            flow_data.get('bwd_iat_max', 0),
-            flow_data.get('bwd_iat_min', 0),
-            flow_data.get('fwd_psh_flags', 0),
-            flow_data.get('bwd_psh_flags', 0),
-            flow_data.get('fwd_urg_flags', 0),
-            flow_data.get('bwd_urg_flags', 0),
-            flow_data.get('fwd_header_length', 0),
-            flow_data.get('bwd_header_length', 0),
-            flow_data.get('fwd_packets_per_second', 0),
-            flow_data.get('bwd_packets_per_second', 0),
-            flow_data.get('min_packet_length', 0),
-            flow_data.get('max_packet_length', 0),
-            flow_data.get('packet_length_mean', 0),
-            flow_data.get('packet_length_std', 0),
-            flow_data.get('packet_length_variance', 0),
-            flow_data.get('fin_flag_count', 0),
-            flow_data.get('syn_flag_count', 0),
-            flow_data.get('rst_flag_count', 0),
-            flow_data.get('psh_flag_count', 0),
-            flow_data.get('ack_flag_count', 0),
-            flow_data.get('urg_flag_count', 0),
-            flow_data.get('cwe_flag_count', 0),
-            flow_data.get('ece_flag_count', 0),
-            flow_data.get('down_up_ratio', 0),
-            flow_data.get('average_packet_size', 0),
-            flow_data.get('avg_fwd_segment_size', 0),
-            flow_data.get('avg_bwd_segment_size', 0),
-            flow_data.get('fwd_header_length_1', 0),
-            flow_data.get('fwd_avg_bytes_per_bulk', 0),
-            flow_data.get('fwd_avg_packets_per_bulk', 0),
-            flow_data.get('fwd_avg_bulk_rate', 0),
-            flow_data.get('bwd_avg_bytes_per_bulk', 0),
-            flow_data.get('bwd_avg_packets_per_bulk', 0),
-            flow_data.get('bwd_avg_bulk_rate', 0),
-            flow_data.get('subflow_fwd_packets', 0),
-            flow_data.get('subflow_bwd_packets', 0),
-            flow_data.get('subflow_fwd_bytes', 0),
-            flow_data.get('subflow_bwd_bytes', 0),
-            flow_data.get('init_win_bytes_forward', 0),
-            flow_data.get('init_win_bytes_backward', 0),
-            flow_data.get('act_data_pkt_fwd', 0),
-            flow_data.get('min_seg_size_forward', 0),
-            flow_data.get('active_mean', 0),
-            flow_data.get('active_std', 0),
-            flow_data.get('active_max', 0),
-            flow_data.get('active_min', 0),
-            flow_data.get('idle_mean', 0),
-            flow_data.get('idle_std', 0),
-            flow_data.get('idle_max', 0),
-            flow_data.get('idle_min', 0)
+        # Create a hashable key for caching
+        flow_key = tuple(sorted(flow_data.items()))
+        
+        # Check cache first
+        if flow_key in _preprocessing_cache:
+            return _preprocessing_cache[flow_key]
+        
+        # Map flow data to feature array (84 features)
+        feature_names = [
+            'flow_duration', 'total_fwd_packets', 'total_backward_packets',
+            'total_length_of_fwd_packets', 'total_length_of_bwd_packets',
+            'fwd_packet_length_max', 'fwd_packet_length_min', 'fwd_packet_length_mean', 'fwd_packet_length_std',
+            'bwd_packet_length_max', 'bwd_packet_length_min', 'bwd_packet_length_mean', 'bwd_packet_length_std',
+            'flow_bytes_per_second', 'flow_packets_per_second', 'flow_iat_mean', 'flow_iat_std', 'flow_iat_max', 'flow_iat_min',
+            'fwd_iat_total', 'fwd_iat_mean', 'fwd_iat_std', 'fwd_iat_max', 'fwd_iat_min',
+            'bwd_iat_total', 'bwd_iat_mean', 'bwd_iat_std', 'bwd_iat_max', 'bwd_iat_min',
+            'fwd_psh_flags', 'bwd_psh_flags', 'fwd_urg_flags', 'bwd_urg_flags',
+            'fwd_header_length', 'bwd_header_length', 'fwd_packets_per_second', 'bwd_packets_per_second',
+            'min_packet_length', 'max_packet_length', 'packet_length_mean', 'packet_length_std', 'packet_length_variance',
+            'fin_flag_count', 'syn_flag_count', 'rst_flag_count', 'psh_flag_count', 'ack_flag_count',
+            'urg_flag_count', 'cwe_flag_count', 'ece_flag_count', 'down_up_ratio', 'average_packet_size',
+            'avg_fwd_segment_size', 'avg_bwd_segment_size', 'fwd_header_length_1',
+            'fwd_avg_bytes_per_bulk', 'fwd_avg_packets_per_bulk', 'fwd_avg_bulk_rate',
+            'bwd_avg_bytes_per_bulk', 'bwd_avg_packets_per_bulk', 'bwd_avg_bulk_rate',
+            'subflow_fwd_packets', 'subflow_bwd_packets', 'subflow_fwd_bytes', 'subflow_bwd_bytes',
+            'init_win_bytes_forward', 'init_win_bytes_backward', 'act_data_pkt_fwd', 'min_seg_size_forward',
+            'active_mean', 'active_std', 'active_max', 'active_min',
+            'idle_mean', 'idle_std', 'idle_max', 'idle_min'
         ]
+        
+        # Extract features in order
+        features = [flow_data.get(name, 0.0) for name in feature_names]
         
         # Convert to numpy array and reshape for single sample
         feature_array = np.array(features, dtype=np.float32).reshape(1, -1)
         
         # Handle infinite values
         feature_array = np.nan_to_num(feature_array, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Cache the result
+        _preprocessing_cache[flow_key] = feature_array
         
         return feature_array
         

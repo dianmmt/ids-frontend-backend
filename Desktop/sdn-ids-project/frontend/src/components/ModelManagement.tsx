@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { 
   Brain, 
   Upload, 
-  Download, 
   Trash2, 
   Play, 
   Pause, 
@@ -50,6 +49,7 @@ export const ModelManagement: React.FC = () => {
     name: '', 
     version: '', 
     framework: '', 
+    model_type: 'binary-classification',
     description: '',
     accuracy: '',
     precision_score: '',
@@ -72,7 +72,7 @@ export const ModelManagement: React.FC = () => {
   const fetchModels = async () => {
     try {
       setLoading(true);
-      const res = await fetch('/api/ml/models', {
+      const res = await fetch('/api/models', {
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
       const data = await res.json();
@@ -144,7 +144,7 @@ export const ModelManagement: React.FC = () => {
         reader.readAsDataURL(selectedFile);
       });
 
-      const res = await fetch('/api/ml/models', {
+      const res = await fetch('/api/models', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,6 +155,7 @@ export const ModelManagement: React.FC = () => {
           version: meta.version || '1.0.0',
           format: ext,
           framework: meta.framework || undefined,
+          model_type: meta.model_type || 'binary-classification',
           description: meta.description || undefined,
           base64Content,
           accuracy: meta.accuracy ? parseFloat(meta.accuracy) : undefined,
@@ -176,6 +177,7 @@ export const ModelManagement: React.FC = () => {
         name: '', 
         version: '', 
         framework: '', 
+        model_type: 'binary-classification',
         description: '',
         accuracy: '',
         precision_score: '',
@@ -195,7 +197,7 @@ export const ModelManagement: React.FC = () => {
 
   const activateModel = async (id: string) => {
     try {
-      const res = await fetch(`/api/ml/models/${id}/activate`, {
+      const res = await fetch(`/api/models/${id}/activate`, {
         method: 'POST',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -211,7 +213,7 @@ export const ModelManagement: React.FC = () => {
 
   const deactivateModel = async (id: string) => {
     try {
-      const res = await fetch(`/api/ml/models/${id}/deactivate`, {
+      const res = await fetch(`/api/models/${id}/deactivate`, {
         method: 'POST',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -228,7 +230,7 @@ export const ModelManagement: React.FC = () => {
   const deleteModel = async (id: string) => {
     if (!confirm('Are you sure you want to delete this model?')) return;
     try {
-      const res = await fetch(`/api/ml/models/${id}`, {
+      const res = await fetch(`/api/models/${id}`, {
         method: 'DELETE',
         headers: token ? { 'Authorization': `Bearer ${token}` } : {}
       });
@@ -240,26 +242,7 @@ export const ModelManagement: React.FC = () => {
     }
   };
 
-  const downloadModel = async (id: string) => {
-    try {
-      const res = await fetch(`/api/models/${id}/download`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `model_${id}.${models.find(m => m.id === id)?.format || 'pkl'}`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-      }
-    } catch (e: any) {
-      alert(e.message || 'Download error');
-    }
-  };
+  // Download functionality removed
 
   const getAccuracyColor = (accuracy: number) => {
     if (accuracy >= 0.9) return 'text-green-400';
@@ -307,6 +290,7 @@ export const ModelManagement: React.FC = () => {
         <div>
           <h1 className="text-3xl font-bold text-white">Model Management</h1>
           <p className="text-gray-400 mt-2">Upload, manage, and deploy ML models for attack detection</p>
+          <p className="text-sm text-blue-400 mt-1">Multiple models can be active simultaneously for different detection scenarios</p>
         </div>
         <button
           onClick={() => setShowUploadForm(true)}
@@ -636,13 +620,7 @@ export const ModelManagement: React.FC = () => {
                     <span>Activate</span>
                   </button>
                 )}
-              <button
-                  onClick={() => downloadModel(model.id)}
-                  className="flex items-center space-x-1 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 hover:text-blue-300 px-3 py-2 rounded-lg text-sm font-medium transition-colors border border-blue-600/30"
-              >
-                  <Download className="h-3 w-3" />
-                  <span>Download</span>
-              </button>
+              {/* Download functionality removed */}
               <button
                   onClick={() => deleteModel(model.id)}
                   className="flex items-center space-x-1 bg-red-600/20 hover:bg-red-600/30 text-red-400 hover:text-red-300 px-3 py-2 rounded-lg text-sm font-medium transition-colors border border-red-600/30"
