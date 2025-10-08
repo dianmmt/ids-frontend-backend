@@ -13,8 +13,8 @@ const ryuWsPort = parseInt(process.env.RYU_WS_PORT || process.env.RYU_PORT || '8
 const ryuService = new RyuService(ryuHost, ryuPort, ryuWsPort);
 // Note: mlPredictor will be created per-user in handlePacketIn to respect user model selection
 
-// Store active SSE connections
-const sseConnections = new Set();
+// Store active SSE connections - exported for use in other modules
+export const sseConnections = new Set();
 
 // Initialize Ryu connection and event handlers
 let isRyuConnected = false;
@@ -97,7 +97,13 @@ const handlePacketIn = async (packetData) => {
       ? true
       : prediction.confidence >= confidenceThreshold;
 
-    if (prediction.isAttack && passesConfidence) {
+    // Filter out Normal traffic - don't save or broadcast
+    const isNormalTraffic = prediction.attackType && 
+      (prediction.attackType.toLowerCase() === 'normal' || 
+       prediction.attackType.toLowerCase() === 'normal traffic' ||
+       prediction.attackType.toLowerCase() === 'benign');
+
+    if (prediction.isAttack && passesConfidence && !isNormalTraffic) {
       // Store attack detection in database
       const attackData = {
         event_id: `attack_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -471,6 +477,7 @@ router.get('/', async (req, res) => {
         ad.analyst_notes
       FROM attack_events ad
       WHERE ad.detected_at >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+        AND LOWER(ad.attack_type) NOT IN ('normal', 'normal traffic', 'benign')
     `;
 
     const params = [];
@@ -557,6 +564,48 @@ router.post('/:id/block', async (req, res) => {
   }
 });
 
+// DELETE /api/attacks/:id - Delete an attack permanently
+router.delete('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Delete attack from database
+    const result = await pool.query(
+      'DELETE FROM attack_events WHERE event_id = $1 RETURNING *',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Attack not found' });
+    }
+
+    // Broadcast deletion to SSE clients
+    const updateData = {
+      id: id,
+      action: 'deleted',
+      timestamp: new Date().toISOString()
+    };
+
+    sseConnections.forEach(res => {
+      try {
+        res.write(`data: ${JSON.stringify(updateData)}\n\n`);
+      } catch (error) {
+        sseConnections.delete(res);
+      }
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Attack deleted successfully',
+      attack_id: id
+    });
+
+  } catch (error) {
+    console.error('Error deleting attack:', error);
+    res.status(500).json({ error: 'Failed to delete attack' });
+  }
+});
+
 // GET /api/attacks/stats - Get attack statistics
 router.get('/stats', async (req, res) => {
   try {
@@ -570,6 +619,7 @@ router.get('/stats', async (req, res) => {
         COUNT(CASE WHEN detected_at >= CURRENT_TIMESTAMP - INTERVAL '1 hour' THEN 1 END) as recent_count
       FROM attack_events 
       WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+        AND LOWER(attack_type) NOT IN ('normal', 'normal traffic', 'benign')
     `).catch(() => ({ rows: [{
       total_attacks: '0',
       critical_count: '0',
@@ -583,6 +633,7 @@ router.get('/stats', async (req, res) => {
       SELECT attack_type, COUNT(*) as count
       FROM attack_events 
       WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+        AND LOWER(attack_type) NOT IN ('normal', 'normal traffic', 'benign')
       GROUP BY attack_type
       ORDER BY count DESC
       LIMIT 10
@@ -640,6 +691,7 @@ router.get('/recent-events', async (req, res) => {
       FROM attack_events ad
       WHERE ad.detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'
         AND ad.false_positive = false
+        AND LOWER(ad.attack_type) NOT IN ('normal', 'normal traffic', 'benign')
       ORDER BY ad.detected_at DESC
       LIMIT $1
     `, [parseInt(limit)]);

@@ -11,17 +11,19 @@ import performanceRoutes from './routes/performance.js';
 import mlRoutes from './routes/ml.js';
 import mlDirectRoutes from './routes/ml-direct.js';
 import mlUserAwareRoutes from './routes/ml-user-aware.js';
-import attacksRoutes from './routes/attacks.js';
+import attacksRoutes, { sseConnections } from './routes/attacks.js';
 import topologyRoutes from './routes/topology.js';
 import dashboardRoutes from './routes/dashboard.js';
 import cicflowmeterRoutes from './routes/cicflowmeter.js';
 import pipelineRoutes from './routes/pipeline.js';
 import ipAnalyzerRoutes from './routes/ip-analyzer.js';
 import modelManagementRoutes from './routes/model-management.js';
+import ipBlockingRoutes from './routes/ip-blocking.js';
 import { initializeDatabase, closeDatabase } from './services/database.js';
 import DatabaseInitializer from './services/databaseInitializer.js';
 import performanceScheduler from './services/performanceScheduler.js';
 import ServiceOrchestrator from './services/serviceOrchestrator.js';
+import { setSseConnections } from './services/pipelineProcessor.js';
 import config from './services/config.js';
 
 dotenv.config();
@@ -61,7 +63,7 @@ app.use(helmet({
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 300, // Tăng từ 100 lên 300 requests per window
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -138,10 +140,14 @@ app.use('/api/ml-user-aware', mlUserAwareRoutes);
 app.use('/api/attacks', attacksRoutes);
 app.use('/api/topology', topologyRoutes);
 app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/cicflowmeter', cicflowmeterRoutes);
+app.use('/api/cicflowmeter', (req, res, next) => {
+  req.serviceOrchestrator = serviceOrchestrator;
+  next();
+}, cicflowmeterRoutes);
 app.use('/api/pipeline', pipelineRoutes);
 app.use('/api/ip-analyzer', ipAnalyzerRoutes);
 app.use('/api/models', modelManagementRoutes);
+app.use('/api/ip-blocking', ipBlockingRoutes);
 
 
 // Admin: counts of performance-related tables (quick ingestion check)
@@ -333,11 +339,16 @@ async function startServer() {
     console.log('✓ Database initialization completed');
     
     // Start the server
-    server.listen(PORT, () => {
-      console.log(`✓ Server running on port ${PORT}`);
-      console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`✓ API endpoints available at: http://localhost:${PORT}/api`);
-    });
+    // ... existing code ...
+
+// Start the server
+	server.listen(PORT, '0.0.0.0', () => {
+	  console.log(`✓ Server running on port ${PORT}`);
+	  console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+	  console.log(`✓ API endpoints available at: http://0.0.0.0:${PORT}/api`);
+	  console.log(`✓ Server accessible from all network interfaces`);
+	});
+// ... existing code ...
     
     // Start performance monitoring scheduler
     performanceScheduler.start();
@@ -346,6 +357,10 @@ async function startServer() {
     // Start service orchestrator (CICFlowMeter pipeline)
     await serviceOrchestrator.start();
     console.log('✓ Service orchestrator started');
+    
+    // Connect SSE connections to PipelineProcessor for attack notifications
+    setSseConnections(sseConnections);
+    console.log('✓ SSE connections linked to PipelineProcessor');
     
     // Graceful shutdown handling
     const gracefulShutdown = async (signal) => {

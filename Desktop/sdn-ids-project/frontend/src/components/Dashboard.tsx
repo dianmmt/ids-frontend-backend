@@ -206,6 +206,8 @@ export const Dashboard: React.FC = () => {
   });
   const [recentEvents, setRecentEvents] = useState<SecurityEvent[]>([]);
   const [eventsLoading, setEventsLoading] = useState<boolean>(false);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const itemsPerPage = 5;
 
   const fetchRecentEvents = useCallback(async () => {
     try {
@@ -220,6 +222,7 @@ export const Dashboard: React.FC = () => {
       if (!response.ok) throw new Error(`Failed to fetch events: ${response.status}`);
       const events = await response.json();
       setRecentEvents(events);
+      setCurrentPage(1); // Reset to first page when new data is loaded
     } catch (e) {
       console.error('Error fetching recent events:', e);
       // Don't set error state for events, just log it
@@ -329,6 +332,24 @@ export const Dashboard: React.FC = () => {
     high: 'bg-red-400/10 border-red-400/20'
   };
 
+  // Pagination logic
+  const totalPages = Math.ceil(recentEvents.length / itemsPerPage);
+  const startIndex = (currentPage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
+  const paginatedEvents = recentEvents.slice(startIndex, endIndex);
+
+  const goToNextPage = () => {
+    if (currentPage < totalPages) {
+      setCurrentPage(currentPage + 1);
+    }
+  };
+
+  const goToPreviousPage = () => {
+    if (currentPage > 1) {
+      setCurrentPage(currentPage - 1);
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* System Status Banner */}
@@ -415,41 +436,66 @@ export const Dashboard: React.FC = () => {
               <p className="text-gray-500 text-sm mt-2">All systems are running smoothly</p>
             </div>
           ) : (
-            recentEvents.map((event) => (
-              <div key={event.id} className="flex items-center space-x-6 p-4 rounded-xl bg-gray-700/50 hover:bg-gray-700/70 transition-colors">
-                <div className={`w-3 h-3 rounded-full ${
-                  event.severity === 'critical' ? 'bg-red-500' :
-                  event.severity === 'high' ? 'bg-red-400' :
-                  event.severity === 'medium' ? 'bg-yellow-400' :
-                  event.severity === 'low' ? 'bg-green-400' : 'bg-gray-400'
-                }`}></div>
-                <div className="flex-1">
-                  <p className="text-white font-medium">{event.event}</p>
-                  <div className="flex items-center space-x-4 mt-1">
-                    <p className="text-gray-400 text-sm">{event.time}</p>
-                    <span className={`px-2 py-1 rounded text-xs font-semibold ${
-                      event.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
-                      event.severity === 'high' ? 'bg-red-400/20 text-red-400' :
-                      event.severity === 'medium' ? 'bg-yellow-400/20 text-yellow-400' :
-                      event.severity === 'low' ? 'bg-green-400/20 text-green-400' : 'bg-gray-400/20 text-gray-400'
-                    }`}>
-                      {event.severity.toUpperCase()}
-                    </span>
-                    {event.confidence && (
-                      <span className="text-gray-500 text-xs">
-                        Confidence: {Math.round(event.confidence * 100)}%
+            <>
+              {paginatedEvents.map((event) => (
+                <div key={event.id} className="flex items-center space-x-6 p-4 rounded-xl bg-gray-700/50 hover:bg-gray-700/70 transition-colors">
+                  <div className={`w-3 h-3 rounded-full ${
+                    event.severity === 'critical' ? 'bg-red-500' :
+                    event.severity === 'high' ? 'bg-red-400' :
+                    event.severity === 'medium' ? 'bg-yellow-400' :
+                    event.severity === 'low' ? 'bg-green-400' : 'bg-gray-400'
+                  }`}></div>
+                  <div className="flex-1">
+                    <p className="text-white font-medium">{event.event}</p>
+                    <div className="flex items-center space-x-4 mt-1">
+                      <p className="text-gray-400 text-sm">{event.time}</p>
+                      <span className={`px-2 py-1 rounded text-xs font-semibold ${
+                        event.severity === 'critical' ? 'bg-red-500/20 text-red-400' :
+                        event.severity === 'high' ? 'bg-red-400/20 text-red-400' :
+                        event.severity === 'medium' ? 'bg-yellow-400/20 text-yellow-400' :
+                        event.severity === 'low' ? 'bg-green-400/20 text-green-400' : 'bg-gray-400/20 text-gray-400'
+                      }`}>
+                        {event.severity.toUpperCase()}
                       </span>
-                    )}
+                    </div>
+                  </div>
+                  {event.status === 'blocked' && (
+                    <div className="flex items-center space-x-1 text-green-400">
+                      <CheckCircle size={16} />
+                      <span className="text-xs font-medium">Blocked</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+              
+              {/* Pagination Controls */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between pt-4 border-t border-gray-700">
+                  <div className="text-sm text-gray-400">
+                    Showing {startIndex + 1}-{Math.min(endIndex, recentEvents.length)} of {recentEvents.length} events
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={goToPreviousPage}
+                      disabled={currentPage === 1}
+                      className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Previous
+                    </button>
+                    <span className="text-sm text-gray-400">
+                      Page {currentPage} of {totalPages}
+                    </span>
+                    <button
+                      onClick={goToNextPage}
+                      disabled={currentPage === totalPages}
+                      className="px-4 py-2 text-sm rounded-lg bg-gray-700 hover:bg-gray-600 border border-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Next
+                    </button>
                   </div>
                 </div>
-                {event.status === 'blocked' && (
-                  <div className="flex items-center space-x-1 text-green-400">
-                    <CheckCircle size={16} />
-                    <span className="text-xs font-medium">Blocked</span>
-                  </div>
-                )}
-              </div>
-            ))
+              )}
+            </>
           )}
         </div>
       </div>

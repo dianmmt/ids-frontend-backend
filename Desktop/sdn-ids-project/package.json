@@ -1,8 +1,18 @@
 {
+  "name": "sdn-ids-project",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "insert-fake-data": "node insert_fake_attack_data.js",
+    "test-ml-format": "node test_ml_prediction_format.js",
+    "generate-test-data": "npm run insert-fake-data 30 15"
+  },
   "dependencies": {
     "axios": "^1.11.0",
     "html2canvas": "^1.4.1",
-    "recharts": "^3.1.2"
+    "recharts": "^3.1.2",
+    "pg": "^8.11.0",
+    "dotenv": "^16.0.0"
   },
   "devDependencies": {
     "@types/recharts": "^2.0.1"

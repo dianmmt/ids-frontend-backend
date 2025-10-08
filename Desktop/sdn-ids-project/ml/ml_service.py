@@ -1,346 +1,538 @@
-# ml/ml_server.py - Simple API server for ML predictions
-from flask import Flask, request, jsonify
-import pickle
-import pandas as pd
-import numpy as np
-import json
-import traceback
-import os
-import base64
-import hashlib
-from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
-import logging
+#!/usr/bin/env python3
+"""
+ML Server for Dynamic Inference Service - FIXED VERSION
+Loads default model first, then checks database in background
+ml/ml_service.py
+"""
 
-# Import your inference script
-import inference
+import os
+import sys
+import time
+import logging
+import threading
+import pickle
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import joblib
+import numpy as np
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout,
+    force=True
+)
 logger = logging.getLogger(__name__)
 
+# Force flush output
+sys.stdout.flush()
+sys.stderr.flush()
+
+# Flask app
 app = Flask(__name__)
+CORS(app)
 
-# Global model variable with thread safety
-model = None
-active_model_meta = {
-    'name': None,
-    'version': None,
-    'format': None,
-    'framework': None,
-    'sha256': None
-}
+# Global variables for model management
+current_model = None
+current_context = None
+model_lock = threading.Lock()
+server_ready = False
 
-# Cache for model loading to avoid repeated loads
-_model_cache = {}
+# ============================================================================
+# CUSTOM UNPICKLER - Fix for "No module named 'models'" error
+# ============================================================================
 
-def load_model_from_bytes(content: bytes, fmt: str) -> bool:
-    """Load model from bytes according to format (pkl/h5/joblib)."""
-    global model
+class CustomUnpickler(pickle.Unpickler):
+    """Custom unpickler to handle missing modules"""
+    def find_class(self, module, name):
+        # Try original module first
+        try:
+            return super().find_class(module, name)
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Module {module}.{name} not found: {e}")
+            
+            # If 'models' module not found, try sklearn
+            if module.startswith('models.'):
+                try:
+                    sklearn_module = module.replace('models.', 'sklearn.')
+                    logger.info(f"Trying sklearn equivalent: {sklearn_module}.{name}")
+                    return super().find_class(sklearn_module, name)
+                except Exception as sklearn_error:
+                    logger.warning(f"sklearn equivalent failed: {sklearn_error}")
+            
+            # Try common module mappings
+            module_mappings = {
+                'models': 'sklearn',
+                'models.ensemble': 'sklearn.ensemble',
+                'models.tree': 'sklearn.tree',
+                'models.linear_model': 'sklearn.linear_model',
+            }
+            
+            for old_prefix, new_prefix in module_mappings.items():
+                if module.startswith(old_prefix):
+                    try:
+                        new_module = module.replace(old_prefix, new_prefix)
+                        logger.info(f"Trying mapping: {new_module}.{name}")
+                        return super().find_class(new_module, name)
+                    except:
+                        pass
+            
+            # If still not found, create dummy class
+            logger.warning(f"Creating dummy class for {module}.{name}")
+            return type(name, (), {})
+
+def safe_joblib_load(filepath):
+    """Safely load joblib file with custom unpickler"""
+    try:
+        # Try normal loading first
+        logger.info(f"Attempting standard joblib load: {filepath}")
+        return joblib.load(filepath)
+    except ModuleNotFoundError as e:
+        logger.warning(f"Standard load failed with ModuleNotFoundError: {e}")
+        logger.info("Retrying with custom unpickler...")
+        
+        # Try with custom unpickler
+        try:
+            with open(filepath, 'rb') as f:
+                model = CustomUnpickler(f).load()
+                logger.info("✓ Successfully loaded with custom unpickler")
+                return model
+        except Exception as custom_error:
+            logger.error(f"Custom unpickler also failed: {custom_error}")
+            raise
+
+def extract_sklearn_model(wrapped_model):
+    """Extract sklearn model from wrapper if needed"""
+    # If it's already a sklearn model, return as is
+    if hasattr(wrapped_model, 'predict') and hasattr(wrapped_model, 'fit'):
+        logger.info("Model has predict and fit methods - using as is")
+        return wrapped_model
     
-    # Create cache key from content hash
-    content_hash = hashlib.sha256(content).hexdigest()
-    cache_key = f"{fmt}_{content_hash}"
+    # Try to extract model from common wrapper patterns
+    wrapper_attrs = ['model', 'estimator', 'classifier', '_model', 'sklearn_model']
+    for attr_name in wrapper_attrs:
+        if hasattr(wrapped_model, attr_name):
+            attr = getattr(wrapped_model, attr_name)
+            if hasattr(attr, 'predict') and hasattr(attr, 'fit'):
+                logger.info(f"Found sklearn model in attribute: {attr_name}")
+                return attr
     
-    # Check cache first
-    if cache_key in _model_cache:
-        model = _model_cache[cache_key]
-        logger.info(f"Model loaded from cache: {cache_key}")
-        return True
+    # If no model found, try to inspect all attributes
+    for attr_name in dir(wrapped_model):
+        if not attr_name.startswith('_'):
+            try:
+                attr = getattr(wrapped_model, attr_name)
+                if hasattr(attr, 'predict') and hasattr(attr, 'fit'):
+                    logger.info(f"Found sklearn model in attribute: {attr_name}")
+                    return attr
+            except:
+                pass
+    
+    # If still not found, return original
+    logger.warning("Could not extract sklearn model, using original")
+    return wrapped_model
+
+# ============================================================================
+# DATABASE AND MODEL LOADING
+# ============================================================================
+
+def get_db_connection():
+    """Get database connection"""
+    return psycopg2.connect(
+        host=os.getenv('DB_HOST', 'localhost'),
+        port=os.getenv('DB_PORT', '5432'),
+        database=os.getenv('DB_NAME', 'sdn_ids'),
+        user=os.getenv('DB_USER', 'sdn_user'),
+        password=os.getenv('DB_PASSWORD', 'sdn_password')
+    )
+
+def load_scaler_encoder():
+    """Load scaler and label encoder from ml/ folder"""
+    scaler = None
+    encoder = None
+    scaler_path = "scaler.joblib"
+    encoder_path = "label_encoder.pkl"
+
+    if os.path.exists(scaler_path):
+        try:
+            scaler = safe_joblib_load(scaler_path)
+            logger.info(f"✓ Scaler loaded: {scaler_path}")
+        except Exception as e:
+            logger.error(f"✗ Failed to load scaler: {e}")
+
+    if os.path.exists(encoder_path):
+        try:
+            encoder = safe_joblib_load(encoder_path)
+            logger.info(f"✓ Label encoder loaded: {encoder_path}")
+        except Exception as e:
+            logger.error(f"✗ Failed to load encoder: {e}")
+
+    return scaler, encoder
+
+def load_default_model(model_name="random_forest_full_best", 
+                      model_file="random_forest_one_third_best_model_2486_samples.pkl",
+                      scaler_file="scaler.joblib", 
+                      encoder_file="label_encoder.pkl"):
+    """Load default model from local files - ALWAYS USE THIS FIRST"""
+    global current_model, current_context
     
     try:
-        if fmt == 'pkl':
-            model = pickle.loads(content)
-        elif fmt == 'h5':
-            # Lazy import to avoid heavy deps unless needed
-            import io
-            import tensorflow as tf  # noqa: F401
-            from tensorflow import keras
-            bio = io.BytesIO(content)
-            model = keras.models.load_model(bio)
-        elif fmt == 'joblib':
-            # Lazy import to avoid heavy deps unless needed
-            import joblib
-            import io
-            bio = io.BytesIO(content)
-            model = joblib.load(bio)
-        else:
-            raise ValueError(f'Unsupported format: {fmt}')
-        
-        # Cache the loaded model
-        _model_cache[cache_key] = model
-        logger.info(f"Model loaded and cached: {cache_key}")
-        return True
-        
+        with model_lock:
+            logger.info("=" * 60)
+            logger.info(f"Loading default model: {model_name}")
+            logger.info(f"Model file: {model_file}")
+            
+            # Check if model file exists
+            if not os.path.exists(model_file):
+                raise Exception(f"Default model file not found: {model_file}")
+            
+            # Load model with safe loader
+            logger.info(f"Reading model file...")
+            try:
+                loaded_model = safe_joblib_load(model_file)
+                logger.info(f"✓ Raw model loaded successfully")
+                logger.info(f"✓ Model type: {type(loaded_model).__name__}")
+                
+                # Extract sklearn model from wrapper if needed
+                current_model = extract_sklearn_model(loaded_model)
+                logger.info(f"✓ Final model type: {type(current_model).__name__}")
+                
+                # Verify model has predict method
+                if not hasattr(current_model, 'predict'):
+                    raise Exception("Model does not have predict method!")
+                    
+            except Exception as load_error:
+                logger.error(f"Failed to load model: {load_error}")
+                raise
+            
+            # Load scaler and encoder
+            logger.info(f"Loading scaler and encoder...")
+            scaler, encoder = load_scaler_encoder()
+            
+            current_context = {
+                "model_id": f"default_{model_name}",
+                "scaler": scaler,
+                "label_encoder": encoder,
+                "loaded_at": time.time(),
+                "model_type": "default"
+            }
+            
+            logger.info(f"✓ Model context created")
+            logger.info(f"  - Model ID: default_{model_name}")
+            logger.info(f"  - Type: default")
+            logger.info(f"  - Has predict: {hasattr(current_model, 'predict')}")
+            logger.info(f"  - Scaler: {'✓' if scaler else '✗'}")
+            logger.info(f"  - Encoder: {'✓' if encoder else '✗'}")
+            logger.info("=" * 60)
+            
     except Exception as e:
-        logger.error(f"Error loading model from bytes: {str(e)}")
-        return False
+        logger.error(f"✗ Error loading default model: {e}")
+        raise
+
+def load_model_from_database(model_id):
+    """Load model from database (supports both filesystem and BYTEA storage)"""
+    with model_lock:
+        try:
+            logger.info(f"Attempting to load model from database: {model_id}")
+            
+            with get_db_connection() as conn:
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                
+                # Query both file_path and content (BYTEA)
+                query = """
+                SELECT file_path, content, storage_type, file_type, upload_status 
+                FROM model_files
+                WHERE model_id = %s 
+                  AND file_type = 'model' 
+                  AND upload_status = 'completed'
+                LIMIT 1
+                """
+                cursor.execute(query, (model_id,))
+                result = cursor.fetchone()
+
+                if not result:
+                    raise Exception(f"No model file found for {model_id}")
+
+                storage_type = result.get("storage_type", "filesystem")
+                logger.info(f"Storage type: {storage_type}")
+                
+                # Load based on storage type
+                if storage_type == "database":
+                    # Load from BYTEA column
+                    content = result["content"]
+                    if content is None:
+                        raise Exception(f"content is NULL for model {model_id}")
+                    
+                    logger.info(f"Loading model from database BYTEA ({len(content)} bytes)")
+                    
+                    # Load from binary data
+                    import io
+                    model_obj = joblib.load(io.BytesIO(content))
+                    
+                elif storage_type == "filesystem":
+                    # Load from file path
+                    model_path = result["file_path"]
+                    logger.info(f"Loading model from filesystem: {model_path}")
+                    
+                    if model_path is None:
+                        raise Exception(f"file_path is NULL for model {model_id}")
+                    
+                    if not os.path.exists(model_path):
+                        raise Exception(f"Model file not found: {model_path}")
+                    
+                    model_obj = safe_joblib_load(model_path)
+                else:
+                    raise Exception(f"Unsupported storage_type: {storage_type}")
+                
+                # Extract sklearn model
+                model_obj = extract_sklearn_model(model_obj)
+                logger.info(f"✓ Model loaded from database: {model_id}")
+
+                # Load scaler and encoder
+                scaler, label_encoder = load_scaler_encoder()
+
+                return model_obj, {
+                    "model_id": model_id,
+                    "scaler": scaler,
+                    "label_encoder": label_encoder,
+                    "loaded_at": time.time(),
+                    "model_type": "database",
+                    "storage_type": storage_type
+                }
+
+        except Exception as e:
+            logger.error(f"✗ Error loading model from database {model_id}: {e}")
+            raise
+
+def load_primary_model_background():
+    """Load primary model in background"""
+    global current_model, current_context
+    
+    logger.info("Background: Checking for database model...")
+    
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("""
+                SELECT model_id FROM model_selections 
+                WHERE selection_type = 'primary' 
+                ORDER BY created_at DESC LIMIT 1
+            """)
+            result = cursor.fetchone()
+            
+            if result:
+                model_id = result['model_id']
+                logger.info(f"Background: Found database model: {model_id}")
+                
+                db_model, db_context = load_model_from_database(model_id)
+                
+                with model_lock:
+                    current_model = db_model
+                    current_context = db_context
+                
+                logger.info(f"✓ Background: Database model loaded")
+                return
+                
+    except Exception as db_error:
+        logger.warning(f"Background: Failed to load database model: {db_error}")
+    
+    logger.info("Background: Using default model")
+
+def run_inference(model, context, X_input):
+    """Run inference"""
+    scaler = context.get("scaler")
+    label_encoder = context.get("label_encoder")
+
+    if scaler:
+        X_input = scaler.transform(X_input)
+
+    y_pred = model.predict(X_input)
+
+    # Manual mapping if label encoder fails or is not available
+    # Mapping: 0=BFA, 1=BOTNET, 2=DDoS, 3=DoS, 4=Normal, 5=Probe, 6=U2R, 7=Web-Attack
+    label_mapping = {
+        0: 'BFA',
+        1: 'BOTNET', 
+        2: 'DDoS',
+        3: 'DoS',
+        4: 'Normal',
+        5: 'Probe',
+        6: 'U2R',
+        7: 'Web-Attack'
+    }
+
+    if label_encoder:
+        try:
+            y_pred_decoded = label_encoder.inverse_transform(y_pred)
+        except Exception as e:
+            logger.error(f"Label encoder failed: {e}, using manual mapping")
+            y_pred_decoded = np.array([label_mapping.get(int(pred), f'Unknown_{pred}') for pred in y_pred])
+    else:
+        logger.warning("No label encoder available, using manual mapping")
+        y_pred_decoded = np.array([label_mapping.get(int(pred), f'Unknown_{pred}') for pred in y_pred])
+
+    return {
+        "predictions": y_pred_decoded.tolist(),
+        "raw_predictions": y_pred.tolist(),
+        "model_id": context["model_id"],
+        "timestamp": time.time()
+    }
+
+# ============================================================================
+# REST API ENDPOINTS
+# ============================================================================
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy' if model is not None else 'unhealthy',
-        'model_loaded': model is not None,
-        'model_meta': active_model_meta,
-        'timestamp': datetime.now().isoformat()
-    })
-
-@app.route('/model/load', methods=['POST'])
-def load_model():
-    """Load a new model from bytes"""
-    global model, active_model_meta
-    
+    """Health check"""
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({'error': 'No data provided'}), 400
-        
-        # Extract and validate parameters
-        name = data.get('name', 'Unknown')
-        version = data.get('version', '1.0.0')
-        fmt = data.get('format', 'pkl')
-        framework = data.get('framework', 'unknown')
-        sha256 = data.get('sha256', '')
-        base64_content = data.get('base64Content', '')
-        
-        if not base64_content:
-            return jsonify({'error': 'No model content provided'}), 400
-        
-        # Validate format
-        if fmt not in ['pkl', 'h5', 'joblib']:
-            return jsonify({'error': f'Unsupported format: {fmt}'}), 400
-        
-        # Decode base64 content
-        try:
-            content = base64.b64decode(base64_content)
-        except Exception as e:
-            return jsonify({'error': f'Invalid base64 content: {str(e)}'}), 400
-        
-        # Verify SHA256 if provided
-        if sha256:
-            content_hash = hashlib.sha256(content).hexdigest()
-            if content_hash != sha256:
-                return jsonify({'error': 'SHA256 hash mismatch'}), 400
-        
-        # Load model
-        if load_model_from_bytes(content, fmt):
-            active_model_meta = {
-                'name': name,
-                'version': version,
-                'format': fmt,
-                'framework': framework,
-                'sha256': sha256 or hashlib.sha256(content).hexdigest()
-            }
-            
-            logger.info(f"Model loaded successfully: {name} v{version}")
+        if not server_ready:
             return jsonify({
-                'success': True,
-                'message': f'Model {name} v{version} loaded successfully',
-                'model_meta': active_model_meta
-            })
-        else:
-            return jsonify({'error': 'Failed to load model'}), 500
-            
+                'status': 'starting',
+                'message': 'Server is starting up...'
+            }), 503
+        
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+            db_healthy = True
+        except:
+            db_healthy = False
+        
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': time.time(),
+            'model_loaded': current_model is not None,
+            'model_id': current_context.get('model_id') if current_context else None,
+            'database_healthy': db_healthy
+        }), 200
+        
     except Exception as e:
-        logger.error(f"Error loading model: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Make prediction on flow data"""
-    if model is None:
-        return jsonify({'error': 'No model loaded'}), 500
-    
+    """Predict endpoint"""
     try:
+        if not current_model or not current_context:
+            return jsonify({
+                'error': 'No model loaded',
+                'is_malicious': False,
+                'prediction': 'Normal'
+            }), 503
+            
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No data provided'}), 400
+            return jsonify({'error': 'No input data'}), 400
+            
+        if isinstance(data, list):
+            X_input = np.array(data)
+        elif isinstance(data, dict) and 'features' in data:
+            X_input = np.array(data['features'])
+        else:
+            return jsonify({'error': 'Invalid format'}), 400
+            
+        if X_input.ndim == 1:
+            X_input = X_input.reshape(1, -1)
+            
+        result = run_inference(current_model, current_context, X_input)
         
-        # Use inference script for prediction
-        result = inference.predict_threat(data, model)
-        
-        return jsonify({
-            'success': True,
-            'prediction': result.get('prediction', 'unknown'),
-            'is_malicious': result.get('is_malicious', False),
-            'confidence': result.get('confidence', 0.0),
-            'model_meta': active_model_meta
-        })
-        
+        predictions = result['predictions']
+        if predictions:
+            prediction = predictions[0] if isinstance(predictions, list) else predictions
+            is_malicious = prediction not in ['Normal', 'BENIGN']
+            
+            return jsonify({
+                'is_malicious': is_malicious,
+                'prediction': prediction,
+                'confidence': 0.85,
+                'attack_type': prediction if is_malicious else 'Normal',
+                'model_id': result.get('model_id')
+            }), 200
+        else:
+            return jsonify({
+                'is_malicious': False,
+                'prediction': 'Normal'
+            }), 200
+            
     except Exception as e:
-        logger.error(f"Error in prediction: {str(e)}")
+        logger.error(f"Prediction error: {e}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/predict/batch', methods=['POST'])
-def predict_batch():
-    """Make batch predictions on multiple flows"""
-    if model is None:
-        return jsonify({'error': 'No model loaded'}), 500
-    
-    try:
-        data = request.get_json()
-        flows = data.get('flows', [])
-        
-        if not flows:
-            return jsonify({'error': 'No flows provided'}), 400
-        
-        # Limit batch size to prevent memory issues
-        max_batch_size = 1000
-        if len(flows) > max_batch_size:
-            return jsonify({'error': f'Batch size too large. Maximum {max_batch_size} flows allowed.'}), 400
-        
-        predictions = []
-        successful_predictions = 0
-        
-        for i, flow_data in enumerate(flows):
-            try:
-                result = inference.predict_threat(flow_data, model)
-                predictions.append({
-                    'flow_id': flow_data.get('flow_id', f'flow_{i}'),
-                    'prediction': result.get('prediction', 'unknown'),
-                    'is_malicious': result.get('is_malicious', False),
-                    'confidence': result.get('confidence', 0.0)
-                })
-                successful_predictions += 1
-            except Exception as e:
-                logger.warning(f"Error processing flow {i}: {str(e)}")
-                predictions.append({
-                    'flow_id': flow_data.get('flow_id', f'flow_{i}'),
-                    'prediction': 'unknown',
-                    'is_malicious': False,
-                    'confidence': 0.0,
-                    'error': str(e)
-                })
-        
-        return jsonify({
-            'success': True,
-            'predictions': predictions,
-            'total_flows': len(flows),
-            'successful_predictions': successful_predictions,
-            'model_meta': active_model_meta
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in batch prediction: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+@app.route('/reload-model', methods=['POST'])
+def reload_model():
+    """Reload model"""
+    threading.Thread(target=load_primary_model_background, daemon=True).start()
+    return jsonify({'status': 'reloading'}), 202
 
-@app.route('/test', methods=['GET'])
-def test_prediction():
-    """Test endpoint with sample data"""
-    if model is None:
-        return jsonify({'error': 'No model loaded'}), 500
-    
-    try:
-        # Create sample flow data
-        sample_flow = {
-            'flow_duration': 10.5,
-            'total_fwd_packets': 100,
-            'total_backward_packets': 50,
-            'total_length_of_fwd_packets': 50000,
-            'total_length_of_bwd_packets': 25000,
-            'fwd_packet_length_max': 1500,
-            'fwd_packet_length_min': 64,
-            'fwd_packet_length_mean': 500,
-            'fwd_packet_length_std': 200,
-            'bwd_packet_length_max': 1000,
-            'bwd_packet_length_min': 32,
-            'bwd_packet_length_mean': 500,
-            'bwd_packet_length_std': 150,
-            'flow_bytes_per_second': 7500,
-            'flow_packets_per_second': 15,
-            'flow_iat_mean': 1000,
-            'flow_iat_std': 200,
-            'flow_iat_max': 2000,
-            'flow_iat_min': 100,
-            'fwd_iat_total': 10000,
-            'fwd_iat_mean': 800,
-            'fwd_iat_std': 150,
-            'fwd_iat_max': 1500,
-            'fwd_iat_min': 50,
-            'bwd_iat_total': 5000,
-            'bwd_iat_mean': 1200,
-            'bwd_iat_std': 250,
-            'bwd_iat_max': 2000,
-            'bwd_iat_min': 100,
-            'fwd_psh_flags': 0,
-            'bwd_psh_flags': 0,
-            'fwd_urg_flags': 0,
-            'bwd_urg_flags': 0,
-            'fwd_header_length': 20,
-            'bwd_header_length': 20,
-            'fwd_packets_per_second': 10,
-            'bwd_packets_per_second': 5,
-            'min_packet_length': 32,
-            'max_packet_length': 1500,
-            'packet_length_mean': 500,
-            'packet_length_std': 200,
-            'packet_length_variance': 40000,
-            'fin_flag_count': 0,
-            'syn_flag_count': 1,
-            'rst_flag_count': 0,
-            'psh_flag_count': 10,
-            'ack_flag_count': 90,
-            'urg_flag_count': 0,
-            'cwe_flag_count': 0,
-            'ece_flag_count': 0,
-            'down_up_ratio': 2,
-            'average_packet_size': 500,
-            'avg_fwd_segment_size': 500,
-            'avg_bwd_segment_size': 500,
-            'fwd_header_length_1': 20,
-            'fwd_avg_bytes_per_bulk': 1000,
-            'fwd_avg_packets_per_bulk': 2,
-            'fwd_avg_bulk_rate': 0.1,
-            'bwd_avg_bytes_per_bulk': 500,
-            'bwd_avg_packets_per_bulk': 1,
-            'bwd_avg_bulk_rate': 0.05,
-            'subflow_fwd_packets': 100,
-            'subflow_bwd_packets': 50,
-            'subflow_fwd_bytes': 50000,
-            'subflow_bwd_bytes': 25000,
-            'init_win_bytes_forward': 65535,
-            'init_win_bytes_backward': 65535,
-            'act_data_pkt_fwd': 100,
-            'min_seg_size_forward': 0,
-            'active_mean': 1000,
-            'active_std': 200,
-            'active_max': 2000,
-            'active_min': 100,
-            'idle_mean': 0,
-            'idle_std': 0,
-            'idle_max': 0,
-            'idle_min': 0
-        }
-        
-        result = inference.predict_threat(sample_flow, model)
-        
-        return jsonify({
-            'success': True,
-            'sample_flow': sample_flow,
-            'prediction': result.get('prediction', 'unknown'),
-            'is_malicious': result.get('is_malicious', False),
-            'confidence': result.get('confidence', 0.0),
-            'model_meta': active_model_meta
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in test prediction: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+@app.route('/model-status', methods=['GET'])
+def model_status():
+    """Get model status"""
+    return jsonify({
+        'model_loaded': current_model is not None,
+        'model_id': current_context.get('model_id') if current_context else None,
+        'status': 'loaded' if current_model else 'loading'
+    }), 200
 
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Endpoint not found'}), 404
+def model_watcher():
+    """Watch for model changes"""
+    while True:
+        try:
+            time.sleep(60)
+            with get_db_connection() as conn:
+                cursor = conn.cursor(cursor_factory=RealDictCursor)
+                cursor.execute("""
+                    SELECT model_id FROM model_selections 
+                    WHERE selection_type = 'primary' 
+                    ORDER BY created_at DESC LIMIT 1
+                """)
+                result = cursor.fetchone()
+                
+                if result and current_context:
+                    new_model = result['model_id']
+                    if new_model != current_context.get('model_id'):
+                        logger.info(f"Model changed: {new_model}")
+                        threading.Thread(target=load_primary_model_background, daemon=True).start()
+        except Exception as e:
+            logger.error(f"Watcher error: {e}")
+            time.sleep(60)
 
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Internal server error'}), 500
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting ML Service...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
-
-
-
-
+    print("=" * 60)
+    print("Starting Dynamic ML Inference Server")
+    print("=" * 60)
+    sys.stdout.flush()
+    
+    # Load default model BEFORE starting Flask
+    try:
+        logger.info("STARTUP: Loading default model...")
+        load_default_model()
+        logger.info("✓ STARTUP: Default model loaded")
+        server_ready = True
+    except Exception as e:
+        logger.error(f"✗ STARTUP: Failed: {e}")
+        sys.exit(1)
+    
+    # Start Flask
+    port = int(os.getenv('PORT', 5000))
+    host = os.getenv('HOST', '0.0.0.0')
+    
+    logger.info(f"Starting Flask on {host}:{port}")
+    
+    # Background threads
+    threading.Thread(target=load_primary_model_background, daemon=True).start()
+    threading.Thread(target=model_watcher, daemon=True).start()
+    
+    try:
+        app.run(host=host, port=port, debug=False, threaded=True, use_reloader=False)
+    except Exception as e:
+        logger.error(f"Flask failed: {e}")
+        sys.exit(1)

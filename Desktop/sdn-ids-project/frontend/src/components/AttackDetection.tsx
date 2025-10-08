@@ -6,10 +6,9 @@ import {
   Filter,
   Search,
   Download,
-  Eye,
-  Ban,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Trash2
 } from 'lucide-react';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
@@ -50,13 +49,59 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
   const [attacks, setAttacks] = useState<AttackEvent[]>([]);
   const [filterSeverity, setFilterSeverity] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchIp, setSearchIp] = useState('');
+  const [searchAttackType, setSearchAttackType] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [activeModels, setActiveModels] = useState<ActiveModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>('');
+  const [isTestingModel, setIsTestingModel] = useState<boolean>(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState<{ip: boolean, attackType: boolean}>({ip: false, attackType: false});
   const eventsPerPage = 5;
   const reportRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Common attack types and IP patterns for suggestions
+  const commonAttackTypes = [
+    'DDoS', 'SQL Injection', 'XSS', 'Brute Force', 'Port Scan',
+    'Malware', 'Phishing', 'Ransomware', 'Botnet', 'Anomaly'
+  ];
+
+  const commonIpPatterns = [
+    '192.168.', '10.0.', '172.16.', '127.0.0.1', '0.0.0.0'
+  ];
+
+  // Load recent searches from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('recentSearches');
+    if (saved) {
+      try {
+        setRecentSearches(JSON.parse(saved));
+      } catch (e) {
+        console.error('Error loading recent searches:', e);
+      }
+    }
+  }, []);
+
+  // Save recent searches to localStorage
+  const saveRecentSearch = (search: string) => {
+    if (!search.trim()) return;
+    
+    const updated = [search, ...recentSearches.filter(s => s !== search)].slice(0, 10);
+    setRecentSearches(updated);
+    localStorage.setItem('recentSearches', JSON.stringify(updated));
+  };
+
+  // Clear all search filters
+  const clearAllSearches = () => {
+    setSearchTerm('');
+    setSearchIp('');
+    setSearchAttackType('');
+    setFilterSeverity('all');
+    setCurrentPage(1);
+  };
 
   // Persist selected model to localStorage for header display
   useEffect(() => {
@@ -122,29 +167,21 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
     }
   };
 
-  // Test selected model with sample data
+  // Test selected model with different data types
   const testSelectedModel = async () => {
     if (!selectedModelId) {
       alert('Please select a model first');
       return;
     }
 
+    setIsTestingModel(true);
+    
     // Save the model selection first
     await saveModelSelection(selectedModelId);
 
     try {
-      const sampleData = {
-        source_ip: '192.168.1.100',
-        destination_ip: '10.0.0.1',
-        source_port: 12345,
-        destination_port: 80,
-        protocol: 'TCP',
-        packet_count: 100,
-        byte_count: 5000,
-        timestamp: new Date().toISOString()
-      };
-
-      const response = await fetch('/api/ml/predict', {
+      // Test with CSV data (77 features)
+      const response = await fetch('/api/ml/test-csv', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -152,27 +189,76 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
           'X-User-ID': localStorage.getItem('userId') || '1',
           'X-Model-Selection-Type': selectedModelId
         },
-        body: JSON.stringify(sampleData)
+        body: JSON.stringify({})
       });
 
       if (response.ok) {
         const result = await response.json();
-        alert(`Model Test Result:\nAttack: ${result.is_malicious ? 'Yes' : 'No'}\nConfidence: ${(result.confidence * 100).toFixed(1)}%\nAttack Type: ${result.prediction}`);
+        
+        // Get model name for display
+        const selectedModel = activeModels.find(m => m.id === selectedModelId);
+        const modelDisplayName = result.model_name || selectedModel?.name || 'Unknown Model';
+        
+        // Create detailed notification message
+        let message = `🤖 Model Test Results\n`;
+        message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        message += `📊 Model: ${modelDisplayName}\n`;
+        message += `📋 Test Type: CSV Data (77 features)\n`;
+        message += `🔍 Predicted Class: ${result.prediction || 'Unknown'}\n`;
+        message += `🎯 Is Attack: ${result.is_malicious ? '⚠️ YES' : '✅ NO'}\n`;
+        message += `⚡ Severity: ${result.severity || 'N/A'}\n`;
+        message += `⏱️ Inference Time: ${result.inference_time || 'N/A'}ms\n`;
+        
+        // Show CSV specific info if available
+        if (result.csv_row_index !== undefined) {
+          message += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+          message += `📋 CSV Data Details:\n`;
+          message += `• Row Index: ${result.csv_row_index}\n`;
+          message += `• Features Used: ${result.features_used || 77}/77\n`;
+          if (result.features_extracted) {
+            message += `• Extraction: ${result.features_extracted}\n`;
+          }
+        }
+        
+        // Show probabilities if available
+        if (result.probabilities && Object.keys(result.probabilities).length > 0) {
+          message += `\n🎲 Class Probabilities:\n`;
+          Object.entries(result.probabilities)
+            .sort(([,a], [,b]) => (b as number) - (a as number)) // Sort by probability desc
+            .forEach(([type, prob]) => {
+              message += `• ${type}: ${((prob as number) * 100).toFixed(1)}%\n`;
+            });
+        }
+        
+        alert(message);
       } else {
         // Parse error response for more details
         const errorData = await response.json().catch(() => ({}));
         const errorMessage = errorData.error || 'Failed to test model';
         
+        // Get model name for error display
+        const selectedModel = activeModels.find(m => m.id === selectedModelId);
+        const modelDisplayName = selectedModel?.name || 'Unknown Model';
+        
         // Provide more detailed error guidance
-        let detailedMessage = `Model Test Failed: ${errorMessage}\n\n`;
-        detailedMessage += "Possible reasons:\n";
-        detailedMessage += "1. No active model selected\n";
-        detailedMessage += "2. ML service not running\n";
-        detailedMessage += "3. Authentication issues\n";
-        detailedMessage += "4. Network connectivity problem\n\n";
-        detailedMessage += "Recommended actions:\n";
+        let detailedMessage = `❌ Model Test Failed\n`;
+        detailedMessage += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+        detailedMessage += `📊 Model: ${modelDisplayName}\n`;
+        detailedMessage += `📋 Test Type: CSV Data (77 features)\n`;
+        detailedMessage += `🚫 Error: ${errorMessage}\n\n`;
+        detailedMessage += "🔍 Possible reasons:\n";
+        detailedMessage += "1. CSV file not found or inaccessible\n";
+        detailedMessage += "2. CSV file format issues\n";
+        detailedMessage += "3. Insufficient features in CSV (need 77)\n";
+        detailedMessage += "4. Model not compatible with CSV data\n";
+        detailedMessage += "5. ML service not running\n";
+        detailedMessage += "6. Authentication issues\n";
+        detailedMessage += "7. Network connectivity problem\n\n";
+        detailedMessage += "💡 Recommended actions:\n";
+        detailedMessage += "- Check CSV file path and permissions\n";
+        detailedMessage += "- Verify CSV has all 77 required features\n";
         detailedMessage += "- Check Model Management page\n";
-        detailedMessage += "- Verify model is activated\n";
+        detailedMessage += "- Verify model is activated and loaded\n";
         detailedMessage += "- Restart ML services\n";
         detailedMessage += "- Check your network connection";
 
@@ -182,14 +268,62 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
     } catch (err) {
       console.error('Model test error:', err);
       
-      let errorMessage = 'Error testing model';
+      // Get model name for error display
+      const selectedModel = activeModels.find(m => m.id === selectedModelId);
+      const modelDisplayName = selectedModel?.name || 'Unknown Model';
+      
+      let errorMessage = `❌ Error Testing Model\n`;
+      errorMessage += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+      errorMessage += `📊 Model: ${modelDisplayName}\n`;
+      errorMessage += `📋 Test Type: CSV Data (77 features)\n`;
+      
       if (err instanceof TypeError) {
-        errorMessage += ': Network error. Check your connection.';
+        errorMessage += '🌐 Network error. Check your connection and ML service status.';
       } else if (err instanceof Error) {
-        errorMessage += `: ${err.message}`;
+        errorMessage += `🚫 Error: ${err.message}`;
+      } else {
+        errorMessage += '🚫 Unknown error occurred during model testing.';
       }
+      
+      errorMessage += '\n\n💡 Try:\n';
+      errorMessage += '- Refresh the page and try again\n';
+      errorMessage += '- Check if ML service is running\n';
+      errorMessage += '- Verify model is properly loaded';
 
       alert(errorMessage);
+    } finally {
+      setIsTestingModel(false);
+    }
+  };
+
+
+  // Delete an attack permanently
+  const deleteAttack = async (attackId: string) => {
+    if (!confirm('Are you sure you want to permanently delete this attack? This action cannot be undone.')) {
+      return;
+    }
+
+    setActionLoading(attackId);
+    try {
+      const response = await fetch(`/api/attacks/${attackId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('authToken') || ''}`
+        }
+      });
+
+      if (response.ok) {
+        // Remove from local state
+        setAttacks(prev => prev.filter(attack => attack.id !== attackId));
+      } else {
+        const errorData = await response.json();
+        alert(`Failed to delete attack: ${errorData.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error deleting attack:', error);
+      alert('Failed to delete attack. Please try again.');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -207,7 +341,7 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
         }
         const data = await response.json();
         const mappedAttacks: AttackEvent[] = data.map((item: any) => ({
-          id: item.detection_id,
+          id: item.event_id,
           timestamp: item.detected_at,
           source_ip: item.source_ip,
           destination_ip: item.destination_ip,
@@ -234,7 +368,7 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
     fetchAttacks();
     fetchActiveModels();
 
-    // Thiết lập SSE
+    // Setup SSE
     const connectSSE = () => {
       eventSourceRef.current = new EventSource('/api/attacks/stream', {
         withCredentials: true
@@ -243,6 +377,13 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
       eventSourceRef.current.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
+          
+          // Handle different types of SSE messages
+          if (payload.action === 'deleted') {
+            setAttacks(prev => prev.filter(attack => attack.id !== payload.id));
+            return;
+          }
+          
           // Ignore non-attack messages (e.g., connection/heartbeat) that lack a stable id
           if (!payload || !payload.id) return;
 
@@ -292,7 +433,21 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
     }
   }, [attacks.length, onAttackCountUpdate]);
 
-  // Khai báo filteredAttacks trước phân trang
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Shift+C to clear all searches
+      if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+        e.preventDefault();
+        clearAllSearches();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // Enhanced filtering logic with multiple search criteria
   const filteredAttacks = attacks.filter(attack => {
     const severityMatch =
       filterSeverity === 'all' || attack.severity === filterSeverity;
@@ -301,12 +456,22 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
     const dest = attack.destination_ip ?? "";
     const type = attack.attack_type ?? "";
   
-    const searchMatch =
-      source.includes(searchTerm) ||
-      dest.includes(searchTerm) ||
+    // General search term (searches across all fields)
+    const generalSearchMatch = !searchTerm || 
+      source.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      dest.toLowerCase().includes(searchTerm.toLowerCase()) ||
       type.toLowerCase().includes(searchTerm.toLowerCase());
   
-    return severityMatch && searchMatch;
+    // IP-specific search (searches both source and destination IPs)
+    const ipSearchMatch = !searchIp || 
+      source.toLowerCase().includes(searchIp.toLowerCase()) ||
+      dest.toLowerCase().includes(searchIp.toLowerCase());
+  
+    // Attack type-specific search
+    const attackTypeSearchMatch = !searchAttackType || 
+      type.toLowerCase().includes(searchAttackType.toLowerCase());
+  
+    return severityMatch && generalSearchMatch && ipSearchMatch && attackTypeSearchMatch;
   });
   
   
@@ -468,20 +633,133 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
         </div>
       </div>
 
-      {/* Filters and Search */}
+      {/* Enhanced Filters and Search */}
       <div className="bg-gray-800/50 backdrop-blur-sm rounded-xl p-6 border border-gray-700">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0">
-          <div className="flex flex-col sm:flex-row sm:items-center space-y-4 sm:space-y-0 sm:space-x-4">
-            <div className="flex items-center space-x-2">
-              <Search size={20} className="text-gray-400" />
-              <input
-                type="text"
-                placeholder="Search by IP or attack type..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="bg-gray-700/50 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-blue-500 w-64"
-              />
+        <div className="space-y-4">
+          {/* Search Header */}
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-white flex items-center space-x-2">
+              <Search size={20} />
+              <span>Search and Filter</span>
+            </h3>
+            <button
+              onClick={clearAllSearches}
+              className="text-sm text-gray-400 hover:text-white transition-colors"
+              title="Clear all filters (Ctrl+Shift+C)"
+            >
+              Clear all filters
+            </button>
+          </div>
+
+          {/* Search Fields */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* General Search */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-300">General Search</label>
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search all..."
+                  value={searchTerm}
+                  onChange={e => {
+                    setSearchTerm(e.target.value);
+                    if (e.target.value.trim()) {
+                      saveRecentSearch(e.target.value);
+                    }
+                  }}
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-lg pl-10 pr-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+                />
+              </div>
             </div>
+
+            {/* IP Address Search */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-300">IP Address</label>
+              <div className="relative">
+                <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-sm">🌐</div>
+                <input
+                  type="text"
+                  placeholder="192.168.1.1 or 10.0.0.0/24"
+                  value={searchIp}
+                  onChange={e => setSearchIp(e.target.value)}
+                  onFocus={() => setShowSuggestions(prev => ({...prev, ip: true}))}
+                  onBlur={() => setTimeout(() => setShowSuggestions(prev => ({...prev, ip: false})), 200)}
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-lg pl-10 pr-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+                />
+                {showSuggestions.ip && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg z-10 max-h-40 overflow-y-auto">
+                    {commonIpPatterns.map((pattern, index) => (
+                      <button
+                        key={index}
+                        onClick={() => {
+                          setSearchIp(pattern);
+                          setShowSuggestions(prev => ({...prev, ip: false}));
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+                      >
+                        {pattern}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Attack Type Search */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-300">Attack Type</label>
+              <div className="relative">
+                <div className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-sm">⚔️</div>
+                <input
+                  type="text"
+                  placeholder="DDoS, SQL Injection, XSS..."
+                  value={searchAttackType}
+                  onChange={e => setSearchAttackType(e.target.value)}
+                  onFocus={() => setShowSuggestions(prev => ({...prev, attackType: true}))}
+                  onBlur={() => setTimeout(() => setShowSuggestions(prev => ({...prev, attackType: false})), 200)}
+                  className="w-full bg-gray-700/50 border border-gray-600 rounded-lg pl-10 pr-3 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+                />
+                {showSuggestions.attackType && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-lg z-10 max-h-40 overflow-y-auto">
+                    {commonAttackTypes.map((type, index) => (
+                      <button
+                        key={index}
+                        onClick={() => {
+                          setSearchAttackType(type);
+                          setShowSuggestions(prev => ({...prev, attackType: false}));
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors"
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Recent Searches */}
+          {recentSearches.length > 0 && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-300">Recent Searches</label>
+              <div className="flex flex-wrap gap-2">
+                {recentSearches.slice(0, 5).map((search, index) => (
+                  <button
+                    key={index}
+                    onClick={() => setSearchTerm(search)}
+                    className="px-3 py-1 bg-gray-700/50 hover:bg-gray-600/50 text-gray-300 hover:text-white text-sm rounded-full border border-gray-600 hover:border-gray-500 transition-colors"
+                  >
+                    {search}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Filters Row */}
+          <div className="flex flex-col sm:flex-row sm:items-center space-y-4 sm:space-y-0 sm:space-x-4 pt-4 border-t border-gray-700">
             <div className="flex items-center space-x-2">
               <Filter size={20} className="text-gray-400" />
               <select
@@ -489,7 +767,7 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                 onChange={e => setFilterSeverity(e.target.value)}
                 className="bg-gray-700/50 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-500"
               >
-                <option value="all">All Severities</option>
+                <option value="all">All Severity Levels</option>
                 <option value="critical">Critical</option>
                 <option value="high">High</option>
                 <option value="medium">Medium</option>
@@ -511,7 +789,7 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                 disabled={activeModels.length === 0}
               >
                 {activeModels.length === 0 ? (
-                  <option value="">No Active Models</option>
+                  <option value="">No active model</option>
                 ) : (
                   activeModels.map(model => (
                     <option key={model.id} value={model.id}>
@@ -520,24 +798,51 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                   ))
                 )}
               </select>
+              
+              {/* Test Button */}
               <button
                 onClick={testSelectedModel}
-                disabled={!selectedModelId}
-                className="group flex items-center justify-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 text-white text-sm rounded-lg transition-all duration-300 ease-in-out transform hover:scale-105 disabled:cursor-not-allowed disabled:scale-100 shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
+                disabled={!selectedModelId || isTestingModel}
+                className="group flex items-center justify-center space-x-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 disabled:from-gray-600 disabled:to-gray-700 text-white text-sm rounded-lg transition-all duration-300 ease-in-out transform hover:scale-105 disabled:cursor-not-allowed disabled:scale-100 shadow-md hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 min-w-[120px]"
+                title="Test with real CSV data (77 features)"
               >
-                <Shield size={18} className="text-white/80 group-hover:animate-pulse group-disabled:animate-none" />
-                <span>Test Model</span>
+                {isTestingModel ? (
+                  <>
+                    <div key="spinner" className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
+                    <span key="testing-text">Testing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Shield key="shield-icon" size={18} className="text-white/80 group-hover:animate-pulse group-disabled:animate-none" />
+                    <span key="test-text">Test Model</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
-          <button
-            onClick={handleExport}
-            className="group flex items-center justify-center space-x-3 px-4 py-2 rounded-lg font-medium text-sm bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white shadow-md hover:shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50"
-          >
-            <Download size={18} className="text-white/80 group-hover:animate-pulse" />
-            <span>Export Report</span>
-          </button>
-
+          
+          {/* Search Results Summary */}
+          <div className="flex items-center justify-between pt-4 border-t border-gray-700">
+            <div className="text-sm text-gray-400">
+              {filteredAttacks.length === attacks.length ? (
+                `Showing all ${attacks.length} events`
+              ) : (
+                `Found ${filteredAttacks.length} of ${attacks.length} events`
+              )}
+              {(searchTerm || searchIp || searchAttackType || filterSeverity !== 'all') && (
+                <span className="ml-2 text-blue-400">
+                  (filtered)
+                </span>
+              )}
+            </div>
+            <button
+              onClick={handleExport}
+              className="group flex items-center justify-center space-x-3 px-4 py-2 rounded-lg font-medium text-sm bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white shadow-md hover:shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50"
+            >
+              <Download size={18} className="text-white/80 group-hover:animate-pulse" />
+              <span>Export Report</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -548,7 +853,7 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
             Recent Attack Events
           </h3>
           <p className="text-gray-400 text-sm">
-            Real-time ML-powered threat detection
+            Real-time threat detection using ML
           </p>
         </div>
         <div className="divide-y divide-gray-700">
@@ -569,9 +874,6 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                       className={`px-3 py-1 rounded-full text-xs font-semibold ${statusColor[attack.status] || 'text-gray-400 bg-gray-400/10'}`}
                     >
                       {(attack.status || 'unknown').toUpperCase()}
-                    </span>
-                    <span className="text-xs text-gray-400">
-                      Confidence: {((attack.confidence || 0) * 100).toFixed(1)}%
                     </span>
                   </div>
 
@@ -603,11 +905,18 @@ export const AttackDetection: React.FC<AttackDetectionProps> = ({ onAttackCountU
                 </div>
 
                 <div className="flex items-center space-x-2 ml-4">
-                  <button className="p-2 text-blue-400 hover:text-blue-300 hover:bg-gray-700 rounded-lg transition-colors">
-                    <Eye size={16} />
-                  </button>
-                  <button className="p-2 text-red-400 hover:text-red-300 hover:bg-gray-700 rounded-lg transition-colors">
-                    <Ban size={16} />
+                  {/* Delete Button */}
+                  <button 
+                    onClick={() => deleteAttack(attack.id)}
+                    disabled={actionLoading === attack.id}
+                    className="p-2 text-red-400 hover:text-red-300 hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50"
+                    title="Delete attack permanently"
+                  >
+                    {actionLoading === attack.id ? (
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-red-400 border-t-transparent"></div>
+                    ) : (
+                      <Trash2 size={16} />
+                    )}
                   </button>
                 </div>
               </div>

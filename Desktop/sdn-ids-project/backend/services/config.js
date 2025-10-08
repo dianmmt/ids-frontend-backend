@@ -25,12 +25,28 @@ const config = {
       // Support comma-separated origins in CORS_ORIGIN, fallback to common dev ports
       // Include Docker container origins and localhost variants
       // For development, be more permissive with localhost and container origins
-      origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000,http://frontend:5173,http://sdn_ids_frontend:5173,http://127.0.0.1:3000,http://127.0.0.1:5173')
+      origin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://localhost:3000,http://127.0.0.1:3000,http://127.0.0.1:5173,http://192.168.163.156:3000,http://192.168.163.156:5173')
         .split(',')
         .map(o => o.trim())
         .filter(Boolean),
     },
   },
+  ml: {
+    service: {
+      port: process.env.ML_SERVICE_PORT || 5000,
+      host: process.env.ML_SERVICE_HOST || 'localhost',
+      // Timeout cho việc chờ model upload từ máy khác (milliseconds)
+      uploadTimeout: parseInt(process.env.ML_UPLOAD_TIMEOUT) || 5000, // 5 giây thay vì 30 giây
+      // Model mặc định khi không có model từ database hoặc upload quá lâu
+      defaultModel: {
+        name: 'random_forest_full_best',
+        modelFile: 'random_forest_full_best_model_1456_samples.pkl',
+        scalerFile: 'scaler.pkl',
+        encoderFile: 'label_encoder.pkl'
+      }
+    }
+  },
+ 
 };
 
 export default config;

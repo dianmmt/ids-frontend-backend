@@ -85,7 +85,12 @@ function App() {
 
   // Notifications handling
   const addNotification = useCallback((n: NotificationItem) => {
-    setNotifications(prev => [n, ...prev]);
+    console.log('[App] addNotification called with:', n);
+    setNotifications(prev => {
+      const updated = [n, ...prev];
+      console.log('[App] Updated notifications state, total count:', updated.length);
+      return updated;
+    });
   }, []);
 
   const dismissNotification = useCallback((id: string) => {
@@ -104,7 +109,11 @@ function App() {
   // Utility to add only unseen notifications
   const addIfUnseen = useCallback((n: NotificationItem) => {
     const seen = seenNotificationIdsRef.current;
-    if (seen.has(n.id)) return;
+    if (seen.has(n.id)) {
+      console.log('[App] Notification already seen:', n.id);
+      return;
+    }
+    console.log('[App] Adding new notification to state:', n.id);
     seen.add(n.id);
     addNotification(n);
   }, [addNotification]);
@@ -114,13 +123,21 @@ function App() {
     // Only when authenticated
     if (authState !== 'authenticated') return;
 
+    console.log('[App] Initializing SSE connection to /api/attacks/stream');
     const es = new EventSource('/api/attacks/stream', { withCredentials: true });
+
+    es.onopen = () => {
+      console.log('[App] SSE connection established successfully');
+    };
 
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        console.log('[App] SSE Event received:', data);
+        
         // Ignore non-attack payloads like connection/heartbeat
         if (data && data.attack_type && data.timestamp && data.id) {
+          console.log('[App] Creating notification for attack:', data.attack_type);
           const title = `${data.attack_type} detected`;
           const message = `${data.source_ip || 'unknown'} → ${data.destination_ip || 'unknown'}${data.severity ? ` • ${String(data.severity).toUpperCase()}` : ''}`;
           const notification: NotificationItem = {
@@ -131,14 +148,22 @@ function App() {
             severity: data.severity || 'medium',
             timestamp: data.timestamp
           };
+          console.log('[App] Adding notification:', notification);
           addIfUnseen(notification);
+        } else {
+          console.log('[App] Ignoring event (missing required fields):', {
+            hasAttackType: !!data?.attack_type,
+            hasTimestamp: !!data?.timestamp,
+            hasId: !!data?.id
+          });
         }
       } catch (e) {
-        // no-op for malformed events
+        console.error('[App] Error parsing SSE event:', e, 'Raw event:', event.data);
       }
     };
 
-    es.onerror = () => {
+    es.onerror = (error) => {
+      console.error('[App] SSE connection error:', error);
       es.close();
     };
 

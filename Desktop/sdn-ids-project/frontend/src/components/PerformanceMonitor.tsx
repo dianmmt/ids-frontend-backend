@@ -68,8 +68,15 @@ interface SystemHealth {
   health_score: number;
 }
 
-// Use Vite env (set VITE_API_BASE_URL in .env if needed). Defaults to proxy '/api'
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+// Logic điều kiện để sử dụng proxy
+const API_BASE_URL = window.location.hostname === 'localhost' 
+  ? import.meta.env.VITE_API_BASE_URL || '/api'
+  : '/api'; // Sử dụng proxy khi truy cập từ IP LAN
+
+// Debug log
+console.log('API_BASE_URL:', API_BASE_URL);
+console.log('VITE_API_BASE_URL:', import.meta.env.VITE_API_BASE_URL);
+console.log('Hostname:', window.location.hostname);
 
 export const PerformanceMonitor: React.FC = () => {
   const [systemMetrics, setSystemMetrics] = useState<SystemMetric[]>([]);
@@ -207,7 +214,7 @@ export const PerformanceMonitor: React.FC = () => {
   }, [systemMetrics.length]);
 
   useEffect(() => { fetchPerformanceData(); }, [fetchPerformanceData]);
-  useEffect(() => { const i = setInterval(fetchPerformanceData, 30000); return () => clearInterval(i); }, [fetchPerformanceData]);
+  useEffect(() => { const i = setInterval(fetchPerformanceData, 60000); return () => clearInterval(i); }, [fetchPerformanceData]);
 
   const handleRefresh = async () => { await fetchPerformanceData(); };
 

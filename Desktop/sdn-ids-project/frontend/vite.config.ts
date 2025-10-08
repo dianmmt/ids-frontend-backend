@@ -8,6 +8,8 @@ export default defineConfig({
     exclude: ['lucide-react'],
   },
   server: {
+    host: '0.0.0.0', // Bind tất cả network interfaces
+    port: 5173,
     proxy: {
       '/api': {
         target: process.env.NODE_ENV === 'development' ? 'http://localhost:3001' : 'http://backend:3001',
@@ -21,5 +23,4 @@ export default defineConfig({
       },
     },
   }
-  
 });

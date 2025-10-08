@@ -1,8 +1,9 @@
-// backend/services/serviceOrchestrator.js - Service Orchestrator
+// backend/services/serviceOrchestrator.js - Service Orchestrator (Fixed)
 import CICFlowMeterCollector from './cicflowmeterCollector.js';
-import PipelineProcessor from './pipelineProcessor.js';
+import PipelineProcessor, { setSseConnections } from './pipelineProcessor.js';
 import IPAnalyzer from './ipAnalyzer.js';
 import { initializeDatabase } from './database.js';
+import DynamicMLService from './dynamicMLService.js';
 
 export class ServiceOrchestrator {
   constructor(options = {}) {
@@ -22,9 +23,30 @@ export class ServiceOrchestrator {
       console.log('[ServiceOrchestrator] Initializing database...');
       await initializeDatabase();
       
+      // Start Dynamic ML Service first
+      console.log('[ServiceOrchestrator] Starting Dynamic ML service...');
+      this.services.mlService = new DynamicMLService();
+      await this.services.mlService.start();
+      
+      await this.delay(this.startupDelay);
+      
       // Start services with delays
       console.log('[ServiceOrchestrator] Starting CICFlowMeter collector...');
-      this.services.collector = new CICFlowMeterCollector();
+      
+      // Pass configuration explicitly
+      const collectorConfig = {
+        csvDirectory: process.env.CICFLOWMETER_CSV_DIRECTORY,
+        csvPath: process.env.CICFLOWMETER_CSV_PATH,
+        csvPattern: process.env.CICFLOWMETER_CSV_PATTERN,
+        socketPort: parseInt(process.env.CICFLOWMETER_SOCKET_PORT) || 9999,
+        socketHost: process.env.CICFLOWMETER_SOCKET_HOST || 'localhost',
+        batchSize: parseInt(process.env.CICFLOWMETER_BATCH_SIZE) || 100,
+        pollInterval: parseInt(process.env.CICFLOWMETER_POLL_INTERVAL) || 5000
+      };
+      
+      console.log('[ServiceOrchestrator] Collector config:', collectorConfig);
+      
+      this.services.collector = new CICFlowMeterCollector(collectorConfig);
       await this.services.collector.start();
       
       await this.delay(this.startupDelay);
@@ -32,15 +54,22 @@ export class ServiceOrchestrator {
       console.log('[ServiceOrchestrator] Starting pipeline processor...');
       this.services.processor = new PipelineProcessor();
       
+      // Make processor globally accessible for real-time processing
+      global.pipelineProcessor = this.services.processor;
+      
       // Check if ML functionality is available
-      if (this.services.processor.mlPredictor.isPythonAvailable()) {
+      const healthCheck = await this.services.processor.mlPredictor.checkHealth();
+      if (healthCheck.status === 'healthy') {
         await this.services.processor.start();
         console.log('[ServiceOrchestrator] Pipeline processor started with ML support');
       } else {
-        console.warn('[ServiceOrchestrator] Python not available - pipeline processor started without ML support');
+        console.warn('[ServiceOrchestrator] ML service not available - pipeline processor started without ML support');
+        console.warn('[ServiceOrchestrator] ML service error:', healthCheck.error);
         // Start processor but it will use fallback predictions
         await this.services.processor.start();
       }
+      
+      console.log('[ServiceOrchestrator] Pipeline processor is ready');
       
       await this.delay(this.startupDelay);
       
@@ -96,6 +125,15 @@ export class ServiceOrchestrator {
         console.error('[ServiceOrchestrator] Error stopping collector:', error);
       }
     }
+
+    if (this.services.mlService) {
+      try {
+        await this.services.mlService.stop();
+        console.log('[ServiceOrchestrator] Dynamic ML service stopped');
+      } catch (error) {
+        console.error('[ServiceOrchestrator] Error stopping ML service:', error);
+      }
+    }
     
     console.log('[ServiceOrchestrator] All services stopped');
   }
@@ -108,6 +146,13 @@ export class ServiceOrchestrator {
       isRunning: this.isRunning,
       services: {}
     };
+    
+    if (this.services.mlService) {
+      status.services.mlService = {
+        name: 'Dynamic ML Service',
+        running: this.services.mlService.isServiceRunning()
+      };
+    }
     
     if (this.services.collector) {
       status.services.collector = {
@@ -144,8 +189,17 @@ export class ServiceOrchestrator {
       services: this.getStatus(),
       collector: null,
       processor: null,
-      analyzer: null
+      analyzer: null,
+      mlService: null
     };
+    
+    try {
+      if (this.services.mlService) {
+        stats.mlService = await this.services.mlService.getStatus();
+      }
+    } catch (error) {
+      console.error('[ServiceOrchestrator] Error getting ML service status:', error);
+    }
     
     try {
       if (this.services.collector) {
@@ -198,6 +252,7 @@ export class ServiceOrchestrator {
         if (Date.now() % 300000 < 60000) { // Every 5 minutes
           const stats = await this.getComprehensiveStats();
           console.log('[ServiceOrchestrator] Periodic stats:', {
+            mlService: stats.mlService?.status || 'stopped',
             collector: stats.collector?.total_flows || 0,
             processor: stats.processor?.totalProcessed || 0,
             analyzer: stats.analyzer?.totalBlocked || 0
@@ -232,8 +287,21 @@ export class ServiceOrchestrator {
       
       // Start the service
       switch (serviceName) {
+        case 'mlService':
+          this.services.mlService = new DynamicMLService();
+          await this.services.mlService.start();
+          break;
         case 'collector':
-          this.services.collector = new CICFlowMeterCollector();
+          const collectorConfig = {
+            csvDirectory: process.env.CICFLOWMETER_CSV_DIRECTORY,
+            csvPath: process.env.CICFLOWMETER_CSV_PATH,
+            csvPattern: process.env.CICFLOWMETER_CSV_PATTERN,
+            socketPort: parseInt(process.env.CICFLOWMETER_SOCKET_PORT) || 9999,
+            socketHost: process.env.CICFLOWMETER_SOCKET_HOST || 'localhost',
+            batchSize: parseInt(process.env.CICFLOWMETER_BATCH_SIZE) || 100,
+            pollInterval: parseInt(process.env.CICFLOWMETER_POLL_INTERVAL) || 5000
+          };
+          this.services.collector = new CICFlowMeterCollector(collectorConfig);
           await this.services.collector.start();
           break;
         case 'processor':
@@ -278,8 +346,26 @@ export class ServiceOrchestrator {
       throw error;
     }
   }
+
+  /**
+   * Reload ML model
+   */
+  async reloadMLModel() {
+    console.log('[ServiceOrchestrator] Reloading ML model...');
+    
+    try {
+      if (this.services.mlService) {
+        const result = await this.services.mlService.reloadModel();
+        console.log('[ServiceOrchestrator] ML model reloaded:', result);
+        return result;
+      } else {
+        throw new Error('ML service not running');
+      }
+    } catch (error) {
+      console.error('[ServiceOrchestrator] Error reloading ML model:', error);
+      throw error;
+    }
+  }
 }
 
 export default ServiceOrchestrator;
-
-

@@ -58,27 +58,26 @@ class ModelValidationSuite:
             else:
                 logger.warning("Label encoder not found")
             
-            # Define feature names (77 CICFlowMeter features)
+            # Define feature names (77 CICFlowMeter features - exact user specification)
             self.feature_names = [
-                'flow_duration', 'total_fwd_packets', 'total_backward_packets',
-                'total_length_of_fwd_packets', 'total_length_of_bwd_packets',
-                'fwd_packet_length_max', 'fwd_packet_length_min', 'fwd_packet_length_mean', 'fwd_packet_length_std',
-                'bwd_packet_length_max', 'bwd_packet_length_min', 'bwd_packet_length_mean', 'bwd_packet_length_std',
-                'flow_bytes_per_second', 'flow_packets_per_second', 'flow_iat_mean', 'flow_iat_std', 'flow_iat_max', 'flow_iat_min',
-                'fwd_iat_total', 'fwd_iat_mean', 'fwd_iat_std', 'fwd_iat_max', 'fwd_iat_min',
-                'bwd_iat_total', 'bwd_iat_mean', 'bwd_iat_std', 'bwd_iat_max', 'bwd_iat_min',
-                'fwd_psh_flags', 'bwd_psh_flags', 'fwd_urg_flags', 'bwd_urg_flags',
-                'fwd_header_length', 'bwd_header_length', 'fwd_packets_per_second', 'bwd_packets_per_second',
-                'min_packet_length', 'max_packet_length', 'packet_length_mean', 'packet_length_std', 'packet_length_variance',
-                'fin_flag_count', 'syn_flag_count', 'rst_flag_count', 'psh_flag_count', 'ack_flag_count',
-                'urg_flag_count', 'cwe_flag_count', 'ece_flag_count',
-                'down_up_ratio', 'average_packet_size', 'avg_fwd_segment_size', 'avg_bwd_segment_size',
-                'fwd_header_length_1', 'fwd_avg_bytes_per_bulk', 'fwd_avg_packets_per_bulk', 'fwd_avg_bulk_rate',
-                'bwd_avg_bytes_per_bulk', 'bwd_avg_packets_per_bulk', 'bwd_avg_bulk_rate',
-                'subflow_fwd_packets', 'subflow_bwd_packets', 'subflow_fwd_bytes', 'subflow_bwd_bytes',
-                'init_win_bytes_forward', 'init_win_bytes_backward', 'act_data_pkt_fwd', 'min_seg_size_forward',
-                'active_mean', 'active_std', 'active_max', 'active_min',
-                'idle_mean', 'idle_std', 'idle_max', 'idle_min'
+                'Protocol', 'Flow Duration', 'Tot Fwd Pkts', 'Tot Bwd Pkts', 
+                'TotLen Fwd Pkts', 'TotLen Bwd Pkts', 'Fwd Pkt Len Max', 'Fwd Pkt Len Min', 
+                'Fwd Pkt Len Mean', 'Fwd Pkt Len Std', 'Bwd Pkt Len Max', 'Bwd Pkt Len Min', 
+                'Bwd Pkt Len Mean', 'Bwd Pkt Len Std', 'Flow Byts/s', 'Flow Pkts/s', 
+                'Flow IAT Mean', 'Flow IAT Std', 'Flow IAT Max', 'Flow IAT Min', 
+                'Fwd IAT Tot', 'Fwd IAT Mean', 'Fwd IAT Std', 'Fwd IAT Max', 'Fwd IAT Min', 
+                'Bwd IAT Tot', 'Bwd IAT Mean', 'Bwd IAT Std', 'Bwd IAT Max', 'Bwd IAT Min', 
+                'Fwd PSH Flags', 'Bwd PSH Flags', 'Fwd URG Flags', 'Bwd URG Flags', 
+                'Fwd Header Len', 'Bwd Header Len', 'Fwd Pkts/s', 'Bwd Pkts/s', 
+                'Pkt Len Min', 'Pkt Len Max', 'Pkt Len Mean', 'Pkt Len Std', 'Pkt Len Var', 
+                'FIN Flag Cnt', 'SYN Flag Cnt', 'RST Flag Cnt', 'PSH Flag Cnt', 'ACK Flag Cnt', 
+                'URG Flag Cnt', 'CWE Flag Count', 'ECE Flag Cnt', 'Down/Up Ratio', 
+                'Pkt Size Avg', 'Fwd Seg Size Avg', 'Bwd Seg Size Avg', 'Fwd Byts/b Avg', 
+                'Fwd Pkts/b Avg', 'Fwd Blk Rate Avg', 'Bwd Byts/b Avg', 'Bwd Pkts/b Avg', 
+                'Bwd Blk Rate Avg', 'Subflow Fwd Pkts', 'Subflow Fwd Byts', 'Subflow Bwd Pkts', 
+                'Subflow Bwd Byts', 'Init Fwd Win Byts', 'Init Bwd Win Byts', 'Fwd Act Data Pkts', 
+                'Fwd Seg Size Min', 'Active Mean', 'Active Std', 'Active Max', 'Active Min', 
+                'Idle Mean', 'Idle Std', 'Idle Max', 'Idle Min'
             ]
             
             logger.info("✅ Model components loaded successfully")
@@ -136,53 +135,53 @@ class ModelValidationSuite:
         
         scenarios = {
             'normal_traffic': {
-                'flow_duration': 10.0,
-                'total_fwd_packets': 50,
-                'total_backward_packets': 45,
-                'total_length_of_fwd_packets': 5000,
-                'total_length_of_bwd_packets': 4500,
-                'flow_bytes_per_second': 500,
-                'flow_packets_per_second': 5,
-                'syn_flag_count': 1,
-                'ack_flag_count': 90,
+                'Flow Duration': 120500,
+                'Tot Fwd Pkts': 10,
+                'Tot Bwd Pkts': 8,
+                'TotLen Fwd Pkts': 1500,
+                'TotLen Bwd Pkts': 800,
+                'Flow Byts/s': 19087.13,
+                'Flow Pkts/s': 149.38,
+                'SYN Flag Cnt': 1,
+                'ACK Flag Cnt': 15,
                 'expected': 'Normal'
             },
             'ddos_attack': {
-                'flow_duration': 0.1,
-                'total_fwd_packets': 10000,
-                'total_backward_packets': 0,
-                'total_length_of_fwd_packets': 1000000,
-                'total_length_of_bwd_packets': 0,
-                'flow_bytes_per_second': 10000000,
-                'flow_packets_per_second': 100000,
-                'syn_flag_count': 10000,
-                'ack_flag_count': 0,
+                'Flow Duration': 1000,
+                'Tot Fwd Pkts': 10000,
+                'Tot Bwd Pkts': 0,
+                'TotLen Fwd Pkts': 1000000,
+                'TotLen Bwd Pkts': 0,
+                'Flow Byts/s': 10000000,
+                'Flow Pkts/s': 100000,
+                'SYN Flag Cnt': 10000,
+                'ACK Flag Cnt': 0,
                 'expected': 'DDoS'
             },
             'port_scan': {
-                'flow_duration': 0.5,
-                'total_fwd_packets': 1000,
-                'total_backward_packets': 0,
-                'total_length_of_fwd_packets': 50000,
-                'total_length_of_bwd_packets': 0,
-                'flow_bytes_per_second': 100000,
-                'flow_packets_per_second': 2000,
-                'syn_flag_count': 1000,
-                'ack_flag_count': 0,
-                'rst_flag_count': 1000,
-                'expected': 'Probe'
+                'Flow Duration': 5000,
+                'Tot Fwd Pkts': 1000,
+                'Tot Bwd Pkts': 0,
+                'TotLen Fwd Pkts': 50000,
+                'TotLen Bwd Pkts': 0,
+                'Flow Byts/s': 100000,
+                'Flow Pkts/s': 2000,
+                'SYN Flag Cnt': 1000,
+                'ACK Flag Cnt': 0,
+                'RST Flag Cnt': 1000,
+                'expected': 'PortScan'
             },
             'brute_force': {
-                'flow_duration': 2.0,
-                'total_fwd_packets': 100,
-                'total_backward_packets': 100,
-                'total_length_of_fwd_packets': 8000,
-                'total_length_of_bwd_packets': 8000,
-                'flow_bytes_per_second': 4000,
-                'flow_packets_per_second': 50,
-                'syn_flag_count': 100,
-                'ack_flag_count': 100,
-                'expected': 'BFA'
+                'Flow Duration': 20000,
+                'Tot Fwd Pkts': 100,
+                'Tot Bwd Pkts': 100,
+                'TotLen Fwd Pkts': 8000,
+                'TotLen Bwd Pkts': 8000,
+                'Flow Byts/s': 4000,
+                'Flow Pkts/s': 50,
+                'SYN Flag Cnt': 100,
+                'ACK Flag Cnt': 100,
+                'expected': 'BruteForce'
             }
         }
         

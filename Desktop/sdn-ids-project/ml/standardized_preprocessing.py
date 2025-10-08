@@ -11,8 +11,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Standard CICFlowMeter feature names in exact order
+# Standard CICFlowMeter feature names in exact order (77 features including Protocol)
 STANDARD_FEATURE_NAMES = [
+    # Protocol (1 feature) - FIRST feature as required by model
+    'protocol',
+    
     # Basic flow info (5 features)
     'flow_duration', 'total_fwd_packets', 'total_backward_packets',
     'total_length_of_fwd_packets', 'total_length_of_bwd_packets',
@@ -35,20 +38,20 @@ STANDARD_FEATURE_NAMES = [
     'fwd_header_length', 'bwd_header_length', 'fwd_packets_per_second', 'bwd_packets_per_second',
     
     # Window size features (5 features)
-    'min_packet_length', 'max_packet_length', 'packet_length_mean', 'packet_length_std', 'packet_length_variance',
+    'packet_length_min', 'packet_length_max', 'packet_length_mean', 'packet_length_std', 'packet_length_variance',
     
     # Flag counts (8 features)
     'fin_flag_count', 'syn_flag_count', 'rst_flag_count', 'psh_flag_count', 'ack_flag_count',
     'urg_flag_count', 'cwe_flag_count', 'ece_flag_count',
     
     # Additional features (4 features)
-    'down_up_ratio', 'average_packet_size', 'avg_fwd_segment_size', 'avg_bwd_segment_size',
+    'down_up_ratio', 'packet_size_avg', 'fwd_segment_size_avg', 'bwd_segment_size_avg',
     
     # Extended CICFlowMeter features (22 features)
-    'fwd_header_length_1', 'fwd_avg_bytes_per_bulk', 'fwd_avg_packets_per_bulk', 'fwd_avg_bulk_rate',
-    'bwd_avg_bytes_per_bulk', 'bwd_avg_packets_per_bulk', 'bwd_avg_bulk_rate',
-    'subflow_fwd_packets', 'subflow_bwd_packets', 'subflow_fwd_bytes', 'subflow_bwd_bytes',
-    'init_win_bytes_forward', 'init_win_bytes_backward', 'act_data_pkt_fwd', 'min_seg_size_forward',
+    'fwd_bytes_per_byte_avg', 'fwd_packets_per_byte_avg', 'fwd_block_rate_avg',
+    'bwd_bytes_per_byte_avg', 'bwd_packets_per_byte_avg', 'bwd_block_rate_avg',
+    'subflow_fwd_packets', 'subflow_fwd_bytes', 'subflow_bwd_packets', 'subflow_bwd_bytes',
+    'init_fwd_win_bytes', 'init_bwd_win_bytes', 'fwd_act_data_packets', 'fwd_segment_size_min',
     'active_mean', 'active_std', 'active_max', 'active_min',
     'idle_mean', 'idle_std', 'idle_max', 'idle_min'
 ]
@@ -58,17 +61,45 @@ def standardize_flow_data(flow_data: Dict[str, Any]) -> np.ndarray:
     Standardize flow data to CICFlowMeter format with 77 features
     
     Args:
-        flow_data: Dictionary containing flow/packet data
+        flow_data: Dictionary containing flow/packet data or array of features
         
     Returns:
         numpy array with 77 standardized features
     """
     try:
-        # Create feature mapping with defaults
+        # Handle case where flow_data is already a feature array
+        if isinstance(flow_data, (list, np.ndarray)):
+            feature_array = np.array(flow_data, dtype=np.float32).reshape(1, -1)
+            # Ensure we have exactly 77 features
+            if feature_array.shape[1] != len(STANDARD_FEATURE_NAMES):
+                logger.warning(f"Feature array has {feature_array.shape[1]} features, expected {len(STANDARD_FEATURE_NAMES)}")
+                # Pad or truncate to correct size
+                if feature_array.shape[1] < len(STANDARD_FEATURE_NAMES):
+                    padding = np.zeros((1, len(STANDARD_FEATURE_NAMES) - feature_array.shape[1]), dtype=np.float32)
+                    feature_array = np.hstack([feature_array, padding])
+                else:
+                    feature_array = feature_array[:, :len(STANDARD_FEATURE_NAMES)]
+            
+            # Handle infinite values
+            feature_array = np.nan_to_num(feature_array, nan=0.0, posinf=0.0, neginf=0.0)
+            return feature_array
+        
+        # Create feature mapping with defaults for dictionary input
         features = {}
         
+        # Protocol - CICFlowMeter CSV already provides numeric values (TCP=6, UDP=17, etc.)
+        protocol_value = flow_data.get('protocol', 6)  # Default to TCP (6)
+        if isinstance(protocol_value, str):
+            # Handle case where protocol might be passed as string number
+            try:
+                features['protocol'] = float(protocol_value)
+            except ValueError:
+                features['protocol'] = 6.0  # Default to TCP if invalid
+        else:
+            features['protocol'] = float(protocol_value) if protocol_value is not None else 6.0
+        
         # Basic flow info
-        features['flow_duration'] = flow_data.get('duration', 0.0)
+        features['flow_duration'] = flow_data.get('flow_duration', flow_data.get('duration', 0.0))
         features['total_fwd_packets'] = flow_data.get('total_fwd_packets', flow_data.get('packet_count', 1))
         features['total_backward_packets'] = flow_data.get('total_backward_packets', 0)
         features['total_length_of_fwd_packets'] = flow_data.get('total_length_of_fwd_packets', flow_data.get('byte_count', 0))
@@ -117,8 +148,8 @@ def standardize_flow_data(flow_data: Dict[str, Any]) -> np.ndarray:
         features['bwd_packets_per_second'] = flow_data.get('bwd_packets_per_second', 0)
         
         # Window size features
-        features['min_packet_length'] = flow_data.get('min_packet_length', flow_data.get('byte_count', 0))
-        features['max_packet_length'] = flow_data.get('max_packet_length', flow_data.get('byte_count', 0))
+        features['packet_length_min'] = flow_data.get('packet_length_min', flow_data.get('byte_count', 0))
+        features['packet_length_max'] = flow_data.get('packet_length_max', flow_data.get('byte_count', 0))
         features['packet_length_mean'] = flow_data.get('packet_length_mean', flow_data.get('avg_packet_size', flow_data.get('byte_count', 0)))
         features['packet_length_std'] = flow_data.get('packet_length_std', 0)
         features['packet_length_variance'] = flow_data.get('packet_length_variance', 0)
@@ -135,26 +166,25 @@ def standardize_flow_data(flow_data: Dict[str, Any]) -> np.ndarray:
         
         # Additional features
         features['down_up_ratio'] = flow_data.get('down_up_ratio', 0)
-        features['average_packet_size'] = flow_data.get('average_packet_size', flow_data.get('avg_packet_size', flow_data.get('byte_count', 0)))
-        features['avg_fwd_segment_size'] = flow_data.get('avg_fwd_segment_size', 0)
-        features['avg_bwd_segment_size'] = flow_data.get('avg_bwd_segment_size', 0)
+        features['packet_size_avg'] = flow_data.get('packet_size_avg', flow_data.get('avg_packet_size', flow_data.get('byte_count', 0)))
+        features['fwd_segment_size_avg'] = flow_data.get('fwd_segment_size_avg', 0)
+        features['bwd_segment_size_avg'] = flow_data.get('bwd_segment_size_avg', 0)
         
         # Extended CICFlowMeter features
-        features['fwd_header_length_1'] = flow_data.get('fwd_header_length_1', 0)
-        features['fwd_avg_bytes_per_bulk'] = flow_data.get('fwd_avg_bytes_per_bulk', 0)
-        features['fwd_avg_packets_per_bulk'] = flow_data.get('fwd_avg_packets_per_bulk', 0)
-        features['fwd_avg_bulk_rate'] = flow_data.get('fwd_avg_bulk_rate', 0)
-        features['bwd_avg_bytes_per_bulk'] = flow_data.get('bwd_avg_bytes_per_bulk', 0)
-        features['bwd_avg_packets_per_bulk'] = flow_data.get('bwd_avg_packets_per_bulk', 0)
-        features['bwd_avg_bulk_rate'] = flow_data.get('bwd_avg_bulk_rate', 0)
+        features['fwd_bytes_per_byte_avg'] = flow_data.get('fwd_bytes_per_byte_avg', 0)
+        features['fwd_packets_per_byte_avg'] = flow_data.get('fwd_packets_per_byte_avg', 0)
+        features['fwd_block_rate_avg'] = flow_data.get('fwd_block_rate_avg', 0)
+        features['bwd_bytes_per_byte_avg'] = flow_data.get('bwd_bytes_per_byte_avg', 0)
+        features['bwd_packets_per_byte_avg'] = flow_data.get('bwd_packets_per_byte_avg', 0)
+        features['bwd_block_rate_avg'] = flow_data.get('bwd_block_rate_avg', 0)
         features['subflow_fwd_packets'] = flow_data.get('subflow_fwd_packets', 0)
-        features['subflow_bwd_packets'] = flow_data.get('subflow_bwd_packets', 0)
         features['subflow_fwd_bytes'] = flow_data.get('subflow_fwd_bytes', 0)
+        features['subflow_bwd_packets'] = flow_data.get('subflow_bwd_packets', 0)
         features['subflow_bwd_bytes'] = flow_data.get('subflow_bwd_bytes', 0)
-        features['init_win_bytes_forward'] = flow_data.get('init_win_bytes_forward', 0)
-        features['init_win_bytes_backward'] = flow_data.get('init_win_bytes_backward', 0)
-        features['act_data_pkt_fwd'] = flow_data.get('act_data_pkt_fwd', 0)
-        features['min_seg_size_forward'] = flow_data.get('min_seg_size_forward', 0)
+        features['init_fwd_win_bytes'] = flow_data.get('init_fwd_win_bytes', 0)
+        features['init_bwd_win_bytes'] = flow_data.get('init_bwd_win_bytes', 0)
+        features['fwd_act_data_packets'] = flow_data.get('fwd_act_data_packets', 0)
+        features['fwd_segment_size_min'] = flow_data.get('fwd_segment_size_min', 0)
         features['active_mean'] = flow_data.get('active_mean', 0)
         features['active_std'] = flow_data.get('active_std', 0)
         features['active_max'] = flow_data.get('active_max', 0)

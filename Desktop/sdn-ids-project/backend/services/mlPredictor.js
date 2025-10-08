@@ -36,9 +36,9 @@ export class MLPredictor {
       const prediction = response.data;
       
       return {
-        isAttack: prediction.is_malicious || prediction.prediction !== 'Normal',
+        isAttack: prediction.is_malicious || (prediction.prediction && prediction.prediction.toLowerCase() !== 'normal'),
         attackType: prediction.attack_type || prediction.prediction || 'Unknown',
-        severity: prediction.severity || this.mapConfidenceToSeverity(prediction.confidence),
+        severity: prediction.severity || this.mapAttackTypeToSeverity(prediction.attack_type || prediction.prediction || 'Unknown', prediction.confidence || 0.0),
         confidence: prediction.confidence || 0.0,
         inferenceTime: prediction.inference_time || 0,
         probabilities: prediction.probabilities || {}
@@ -60,7 +60,55 @@ export class MLPredictor {
   }
 
   /**
-   * Map confidence score to severity level
+   * Map attack type and confidence to severity level
+   * @param {string} attackType - Attack type
+   * @param {number} confidence - Confidence score (0-1)
+   * @returns {string} Severity level
+   */
+  mapAttackTypeToSeverity(attackType, confidence) {
+    // Normalize attack type for comparison
+    const normalizedType = attackType.toLowerCase().trim();
+    
+    // Map specific attack types to base severity
+    let baseSeverity = 'medium';
+    
+    if (normalizedType === 'normal') {
+      return 'low';
+    } else if (normalizedType.includes('dos') || normalizedType.includes('ddos')) {
+      baseSeverity = 'critical'; // DoS/DDoS attacks are critical
+    } else if (normalizedType.includes('u2r')) {
+      baseSeverity = 'critical'; // User-to-Root privilege escalation is critical
+    } else if (normalizedType.includes('r2l')) {
+      baseSeverity = 'high'; // Remote-to-Local access is high severity
+    } else if (normalizedType.includes('web attack') || normalizedType.includes('web_attack')) {
+      baseSeverity = 'high'; // Web attacks are high severity
+    } else if (normalizedType.includes('bfa') || normalizedType.includes('brute')) {
+      baseSeverity = 'high'; // Brute Force Attacks are high severity
+    } else if (normalizedType.includes('probe') || normalizedType.includes('scan')) {
+      baseSeverity = 'medium'; // Probing/scanning is medium severity
+    }
+    
+    // Adjust severity based on confidence
+    if (confidence >= 0.9) {
+      // High confidence - keep or upgrade severity
+      if (baseSeverity === 'medium') return 'high';
+      return baseSeverity;
+    } else if (confidence >= 0.7) {
+      // Medium confidence - keep base severity
+      return baseSeverity;
+    } else if (confidence >= 0.5) {
+      // Lower confidence - downgrade severity slightly
+      if (baseSeverity === 'critical') return 'high';
+      if (baseSeverity === 'high') return 'medium';
+      return baseSeverity;
+    } else {
+      // Very low confidence - low severity
+      return 'low';
+    }
+  }
+
+  /**
+   * Map confidence score to severity level (fallback method)
    * @param {number} confidence - Confidence score (0-1)
    * @returns {string} Severity level
    */

@@ -38,6 +38,11 @@ export const Header: React.FC<HeaderProps> = ({ onMenuClick, currentView, curren
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
 
+  // Debug logging
+  useEffect(() => {
+    console.log('[Header] Notifications prop updated:', notifications.length, notifications);
+  }, [notifications]);
+
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {

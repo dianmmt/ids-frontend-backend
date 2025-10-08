@@ -50,88 +50,62 @@ CREATE TABLE IF NOT EXISTS network_nodes (
 -- ============================================================================
 -- 3. FLOWS - Consolidated Flow Data (CICFlowMeter + Ryu)
 -- ============================================================================
-CREATE TABLE IF NOT EXISTS flows (
+-- Drop existing flows table
+DROP TABLE IF EXISTS flows CASCADE;
+
+CREATE TABLE flows (
     id BIGSERIAL PRIMARY KEY,
     flow_id VARCHAR(100) UNIQUE NOT NULL,
-    switch_id VARCHAR(50) REFERENCES network_nodes(node_id),
-    
-    -- Basic flow identification
+    switch_id VARCHAR(50),
     src_ip INET NOT NULL,
     dst_ip INET NOT NULL,
     src_port INTEGER,
     dst_port INTEGER,
-    protocol VARCHAR(20) NOT NULL,
-    
-    -- Basic flow statistics
+    protocol INTEGER NOT NULL,
     packet_count BIGINT DEFAULT 0,
     byte_count BIGINT DEFAULT 0,
-    duration_seconds DECIMAL(15,6),
-    
-    -- CICFlowMeter complete feature set
-    -- Forward/Backward packet counts and lengths
-    total_fwd_packets INTEGER,
-    total_backward_packets INTEGER,
-    total_length_of_fwd_packets BIGINT,
-    total_length_of_bwd_packets BIGINT,
-    
-    -- Forward packet length features
-    fwd_packet_length_max DECIMAL(10,3),
-    fwd_packet_length_min DECIMAL(10,3),
-    fwd_packet_length_mean DECIMAL(10,3),
-    fwd_packet_length_std DECIMAL(10,3),
-    
-    -- Backward packet length features
-    bwd_packet_length_max DECIMAL(10,3),
-    bwd_packet_length_min DECIMAL(10,3),
-    bwd_packet_length_mean DECIMAL(10,3),
-    bwd_packet_length_std DECIMAL(10,3),
-    
-    -- Flow rate features
-    flow_bytes_per_second DECIMAL(15,6),
-    flow_packets_per_second DECIMAL(12,6),
-    
-    -- Flow IAT (Inter-Arrival Time) features
-    flow_iat_mean DECIMAL(15,6),
-    flow_iat_std DECIMAL(15,6),
-    flow_iat_max DECIMAL(15,6),
-    flow_iat_min DECIMAL(15,6),
-    
-    -- Forward IAT features
-    fwd_iat_total DECIMAL(15,6),
-    fwd_iat_mean DECIMAL(15,6),
-    fwd_iat_std DECIMAL(15,6),
-    fwd_iat_max DECIMAL(15,6),
-    fwd_iat_min DECIMAL(15,6),
-    
-    -- Backward IAT features
-    bwd_iat_total DECIMAL(15,6),
-    bwd_iat_mean DECIMAL(15,6),
-    bwd_iat_std DECIMAL(15,6),
-    bwd_iat_max DECIMAL(15,6),
-    bwd_iat_min DECIMAL(15,6),
-    
-    -- Protocol flags
+    flow_duration NUMERIC(20,3),
+    total_fwd_packets INTEGER DEFAULT 0,
+    total_backward_packets INTEGER DEFAULT 0,
+    total_length_of_fwd_packets BIGINT DEFAULT 0,
+    total_length_of_bwd_packets BIGINT DEFAULT 0,
+    fwd_packet_length_max INTEGER,
+    fwd_packet_length_min INTEGER,
+    fwd_packet_length_mean NUMERIC(20,3),
+    fwd_packet_length_std NUMERIC(20,3),
+    bwd_packet_length_max INTEGER,
+    bwd_packet_length_min INTEGER,
+    bwd_packet_length_mean NUMERIC(20,3),
+    bwd_packet_length_std NUMERIC(20,3),
+    flow_bytes_per_second NUMERIC(20,3),
+    flow_packets_per_second NUMERIC(20,3),
+    flow_iat_mean NUMERIC(20,3),
+    flow_iat_std NUMERIC(20,3),
+    flow_iat_max NUMERIC(20,3),
+    flow_iat_min NUMERIC(20,3),
+    fwd_iat_total NUMERIC(20,3),
+    fwd_iat_mean NUMERIC(20,3),
+    fwd_iat_std NUMERIC(20,3),
+    fwd_iat_max NUMERIC(20,3),
+    fwd_iat_min NUMERIC(20,3),
+    bwd_iat_total NUMERIC(20,3),
+    bwd_iat_mean NUMERIC(20,3),
+    bwd_iat_std NUMERIC(20,3),
+    bwd_iat_max NUMERIC(20,3),
+    bwd_iat_min NUMERIC(20,3),
     fwd_psh_flags INTEGER DEFAULT 0,
     bwd_psh_flags INTEGER DEFAULT 0,
     fwd_urg_flags INTEGER DEFAULT 0,
     bwd_urg_flags INTEGER DEFAULT 0,
-    
-    -- Header length features
-    fwd_header_length INTEGER,
-    bwd_header_length INTEGER,
-    
-    -- Forward/Backward packet rates
-    fwd_packets_per_second DECIMAL(12,6),
-    bwd_packets_per_second DECIMAL(12,6),
-    
-    -- Packet length statistics
-    packet_length_min DECIMAL(10,3),
-    packet_length_max DECIMAL(10,3),
-    packet_length_mean DECIMAL(10,3),
-    packet_length_std DECIMAL(10,3),
-    packet_length_variance DECIMAL(10,3),
-    
-    -- TCP flags
+    fwd_header_length INTEGER DEFAULT 0,
+    bwd_header_length INTEGER DEFAULT 0,
+    fwd_packets_per_second NUMERIC(20,3),
+    bwd_packets_per_second NUMERIC(20,3),
+    packet_length_min INTEGER,
+    packet_length_max INTEGER,
+    packet_length_mean NUMERIC(20,3),
+    packet_length_std NUMERIC(20,3),
+    packet_length_variance NUMERIC(20,3),
     fin_flag_count INTEGER DEFAULT 0,
     syn_flag_count INTEGER DEFAULT 0,
     rst_flag_count INTEGER DEFAULT 0,
@@ -140,54 +114,59 @@ CREATE TABLE IF NOT EXISTS flows (
     urg_flag_count INTEGER DEFAULT 0,
     cwe_flag_count INTEGER DEFAULT 0,
     ece_flag_count INTEGER DEFAULT 0,
-    
-    -- Flow ratios and averages
-    down_up_ratio DECIMAL(10,6),
-    packet_size_avg DECIMAL(10,3),
-    fwd_segment_size_avg DECIMAL(10,3),
-    bwd_segment_size_avg DECIMAL(10,3),
-    
-    -- Forward flow features
-    fwd_bytes_per_byte_avg DECIMAL(10,6),
-    fwd_packets_per_byte_avg DECIMAL(10,6),
-    fwd_block_rate_avg DECIMAL(10,6),
-    
-    -- Backward flow features
-    bwd_bytes_per_byte_avg DECIMAL(10,6),
-    bwd_packets_per_byte_avg DECIMAL(10,6),
-    bwd_block_rate_avg DECIMAL(10,6),
-    
-    -- Subflow features
-    subflow_fwd_packets INTEGER,
-    subflow_fwd_bytes BIGINT,
-    subflow_bwd_packets INTEGER,
-    subflow_bwd_bytes BIGINT,
-    
-    -- Window size features
-    init_fwd_win_bytes INTEGER,
-    init_bwd_win_bytes INTEGER,
-    fwd_act_data_packets INTEGER,
-    fwd_segment_size_min DECIMAL(10,3),
-    
-    -- Active/Idle time features
-    active_mean DECIMAL(15,6),
-    active_std DECIMAL(15,6),
-    active_max DECIMAL(15,6),
-    active_min DECIMAL(15,6),
-    idle_mean DECIMAL(15,6),
-    idle_std DECIMAL(15,6),
-    idle_max DECIMAL(15,6),
-    idle_min DECIMAL(15,6),
-    
-    -- Processing status
+    down_up_ratio NUMERIC(20,3),
+    packet_size_avg NUMERIC(20,3),
+    fwd_segment_size_avg NUMERIC(20,3),
+    bwd_segment_size_avg NUMERIC(20,3),
+    fwd_bytes_per_byte_avg NUMERIC(20,3),
+    fwd_packets_per_byte_avg NUMERIC(20,3),
+    fwd_block_rate_avg NUMERIC(20,3),
+    bwd_bytes_per_byte_avg NUMERIC(20,3),
+    bwd_packets_per_byte_avg NUMERIC(20,3),
+    bwd_block_rate_avg NUMERIC(20,3),
+    subflow_fwd_packets INTEGER DEFAULT 0,
+    subflow_fwd_bytes BIGINT DEFAULT 0,
+    subflow_bwd_packets INTEGER DEFAULT 0,
+    subflow_bwd_bytes BIGINT DEFAULT 0,
+    init_fwd_win_bytes INTEGER DEFAULT 0,
+    init_bwd_win_bytes INTEGER DEFAULT 0,
+    fwd_act_data_packets INTEGER DEFAULT 0,
+    fwd_segment_size_min INTEGER,
+    active_mean NUMERIC(20,3),
+    active_std NUMERIC(20,3),
+    active_max NUMERIC(20,3),
+    active_min NUMERIC(20,3),
+    idle_mean NUMERIC(20,3),
+    idle_std NUMERIC(20,3),
+    idle_max NUMERIC(20,3),
+    idle_min NUMERIC(20,3),
+    label VARCHAR(50),
     is_processed BOOLEAN DEFAULT FALSE,
     processed_at TIMESTAMPTZ,
-    risk_score DECIMAL(5,4) DEFAULT 0 CHECK (risk_score >= 0 AND risk_score <= 1),
-    
-    -- Timestamps
-    flow_start_time TIMESTAMPTZ NOT NULL,
+    risk_score NUMERIC(5,4) DEFAULT 0,
+    flow_start_time TIMESTAMPTZ,
     captured_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_flows_src_ip ON flows(src_ip);
+CREATE INDEX idx_flows_dst_ip ON flows(dst_ip);
+CREATE INDEX idx_flows_captured_at ON flows(captured_at);
+CREATE INDEX idx_flows_is_processed ON flows(is_processed);
+
+-- Create function to cleanup old flows
+CREATE OR REPLACE FUNCTION cleanup_old_flows(days_to_keep INTEGER)
+RETURNS INTEGER AS $$
+DECLARE
+    deleted_count INTEGER;
+BEGIN
+    DELETE FROM flows 
+    WHERE captured_at < NOW() - INTERVAL '1 day' * days_to_keep
+    AND is_processed = TRUE;
+    
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ============================================================================
 -- 4. MODEL_REGISTRY - Consolidated Model Management

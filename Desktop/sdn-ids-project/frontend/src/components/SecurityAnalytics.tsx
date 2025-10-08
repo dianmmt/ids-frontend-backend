@@ -117,10 +117,6 @@ export const SecurityAnalytics: React.FC = () => {
             <div>
               <h3 className="text-3xl font-bold text-white">94.7%</h3>
               <p className="text-purple-400 font-medium">ML Accuracy</p>
-              <div className="flex items-center space-x-1 mt-2">
-                <div className="w-3 h-3 bg-purple-400 rounded-full"></div>
-                <span className="text-purple-400 text-sm">Model confidence</span>
-              </div>
             </div>
             <div className="w-8 h-8 bg-purple-400 rounded-full flex items-center justify-center">
               <span className="text-white text-sm font-bold">AI</span>

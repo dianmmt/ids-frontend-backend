@@ -3,11 +3,15 @@
 
 export class CICFlowMeterFeatureMapper {
   constructor() {
-    // Complete mapping from CICFlowMeter CSV headers to database columns (77 features)
+    // Complete mapping from actual CICFlowMeter CSV headers to database columns
     this.csvToDbMapping = {
       // Basic flow identification
       'Protocol': 'protocol',
-      'Flow Duration': 'duration_seconds',
+      'Flow Duration': 'flow_duration',
+      'Src IP': 'src_ip',
+      'Dst IP': 'dst_ip',
+      'Src Port': 'src_port',
+      'Dst Port': 'dst_port',
       
       // Forward/Backward packet counts and lengths
       'Tot Fwd Pkts': 'total_fwd_packets',
@@ -121,84 +125,85 @@ export class CICFlowMeterFeatureMapper {
       'Idle Min': 'idle_min'
     };
 
-    // ML model feature order (77 features total)
+    // ML model feature order (77 features total) - INCLUDING Protocol as first feature
     this.mlFeatureOrder = [
-      'flow_duration',                    // 1
-      'total_fwd_packets',                // 2
-      'total_backward_packets',           // 3
-      'total_length_of_fwd_packets',      // 4
-      'total_length_of_bwd_packets',      // 5
-      'fwd_packet_length_max',            // 6
-      'fwd_packet_length_min',            // 7
-      'fwd_packet_length_mean',           // 8
-      'fwd_packet_length_std',            // 9
-      'bwd_packet_length_max',            // 10
-      'bwd_packet_length_min',            // 11
-      'bwd_packet_length_mean',           // 12
-      'bwd_packet_length_std',            // 13
-      'flow_bytes_per_second',            // 14
-      'flow_packets_per_second',          // 15
-      'flow_iat_mean',                    // 16
-      'flow_iat_std',                     // 17
-      'flow_iat_max',                     // 18
-      'flow_iat_min',                     // 19
-      'fwd_iat_total',                    // 20
-      'fwd_iat_mean',                     // 21
-      'fwd_iat_std',                      // 22
-      'fwd_iat_max',                      // 23
-      'fwd_iat_min',                      // 24
-      'bwd_iat_total',                    // 25
-      'bwd_iat_mean',                     // 26
-      'bwd_iat_std',                      // 27
-      'bwd_iat_max',                      // 28
-      'bwd_iat_min',                      // 29
-      'fwd_psh_flags',                    // 30
-      'bwd_psh_flags',                    // 31
-      'fwd_urg_flags',                    // 32
-      'bwd_urg_flags',                    // 33
-      'fwd_header_length',               // 34
-      'bwd_header_length',                // 35
-      'fwd_packets_per_second',           // 36
-      'bwd_packets_per_second',           // 37
-      'packet_length_min',                // 38
-      'packet_length_max',                // 39
-      'packet_length_mean',               // 40
-      'packet_length_std',                // 41
-      'packet_length_variance',           // 42
-      'fin_flag_count',                   // 43
-      'syn_flag_count',                   // 44
-      'rst_flag_count',                   // 45
-      'psh_flag_count',                   // 46
-      'ack_flag_count',                   // 47
-      'urg_flag_count',                   // 48
-      'cwe_flag_count',                   // 49
-      'ece_flag_count',                   // 50
-      'down_up_ratio',                    // 51
-      'packet_size_avg',                  // 52
-      'fwd_segment_size_avg',             // 53
-      'bwd_segment_size_avg',             // 54
-      'fwd_bytes_per_byte_avg',          // 55
-      'fwd_packets_per_byte_avg',         // 56
-      'fwd_block_rate_avg',               // 57
-      'bwd_bytes_per_byte_avg',           // 58
-      'bwd_packets_per_byte_avg',         // 59
-      'bwd_block_rate_avg',               // 60
-      'subflow_fwd_packets',              // 61
-      'subflow_fwd_bytes',                // 62
-      'subflow_bwd_packets',              // 63
-      'subflow_bwd_bytes',                // 64
-      'init_fwd_win_bytes',              // 65
-      'init_bwd_win_bytes',              // 66
-      'fwd_act_data_packets',             // 67
-      'fwd_segment_size_min',             // 68
-      'active_mean',                      // 69
-      'active_std',                       // 70
-      'active_max',                       // 71
-      'active_min',                       // 72
-      'idle_mean',                        // 73
-      'idle_std',                         // 74
-      'idle_max',                         // 75
-      'idle_min'                          // 76
+      'protocol',                         // 1 - Protocol (TCP=6, UDP=17, etc.)
+      'flow_duration',                    // 2 - Flow Duration
+      'total_fwd_packets',                // 3 - Tot Fwd Pkts
+      'total_backward_packets',           // 4 - Tot Bwd Pkts
+      'total_length_of_fwd_packets',      // 5 - TotLen Fwd Pkts
+      'total_length_of_bwd_packets',      // 6 - TotLen Bwd Pkts
+      'fwd_packet_length_max',            // 7 - Fwd Pkt Len Max
+      'fwd_packet_length_min',            // 8 - Fwd Pkt Len Min
+      'fwd_packet_length_mean',           // 9 - Fwd Pkt Len Mean
+      'fwd_packet_length_std',            // 10 - Fwd Pkt Len Std
+      'bwd_packet_length_max',            // 11 - Bwd Pkt Len Max
+      'bwd_packet_length_min',            // 12 - Bwd Pkt Len Min
+      'bwd_packet_length_mean',           // 13 - Bwd Pkt Len Mean
+      'bwd_packet_length_std',            // 14 - Bwd Pkt Len Std
+      'flow_bytes_per_second',            // 15 - Flow Byts/s
+      'flow_packets_per_second',          // 16 - Flow Pkts/s
+      'flow_iat_mean',                    // 17 - Flow IAT Mean
+      'flow_iat_std',                     // 18 - Flow IAT Std
+      'flow_iat_max',                     // 19 - Flow IAT Max
+      'flow_iat_min',                     // 20 - Flow IAT Min
+      'fwd_iat_total',                    // 21 - Fwd IAT Tot
+      'fwd_iat_mean',                     // 22 - Fwd IAT Mean
+      'fwd_iat_std',                      // 23 - Fwd IAT Std
+      'fwd_iat_max',                      // 24 - Fwd IAT Max
+      'fwd_iat_min',                      // 25 - Fwd IAT Min
+      'bwd_iat_total',                    // 26 - Bwd IAT Tot
+      'bwd_iat_mean',                     // 27 - Bwd IAT Mean
+      'bwd_iat_std',                      // 28 - Bwd IAT Std
+      'bwd_iat_max',                      // 29 - Bwd IAT Max
+      'bwd_iat_min',                      // 30 - Bwd IAT Min
+      'fwd_psh_flags',                    // 31 - Fwd PSH Flags
+      'bwd_psh_flags',                    // 32 - Bwd PSH Flags
+      'fwd_urg_flags',                    // 33 - Fwd URG Flags
+      'bwd_urg_flags',                    // 34 - Bwd URG Flags
+      'fwd_header_length',                // 35 - Fwd Header Len
+      'bwd_header_length',                // 36 - Bwd Header Len
+      'fwd_packets_per_second',           // 37 - Fwd Pkts/s
+      'bwd_packets_per_second',           // 38 - Bwd Pkts/s
+      'packet_length_min',                // 39 - Pkt Len Min
+      'packet_length_max',                // 40 - Pkt Len Max
+      'packet_length_mean',               // 41 - Pkt Len Mean
+      'packet_length_std',                // 42 - Pkt Len Std
+      'packet_length_variance',           // 43 - Pkt Len Var
+      'fin_flag_count',                   // 44 - FIN Flag Cnt
+      'syn_flag_count',                   // 45 - SYN Flag Cnt
+      'rst_flag_count',                   // 46 - RST Flag Cnt
+      'psh_flag_count',                   // 47 - PSH Flag Cnt
+      'ack_flag_count',                   // 48 - ACK Flag Cnt
+      'urg_flag_count',                   // 49 - URG Flag Cnt
+      'cwe_flag_count',                   // 50 - CWE Flag Count
+      'ece_flag_count',                   // 51 - ECE Flag Cnt
+      'down_up_ratio',                    // 52 - Down/Up Ratio
+      'packet_size_avg',                  // 53 - Pkt Size Avg
+      'fwd_segment_size_avg',             // 54 - Fwd Seg Size Avg
+      'bwd_segment_size_avg',             // 55 - Bwd Seg Size Avg
+      'fwd_bytes_per_byte_avg',           // 56 - Fwd Byts/b Avg
+      'fwd_packets_per_byte_avg',         // 57 - Fwd Pkts/b Avg
+      'fwd_block_rate_avg',               // 58 - Fwd Blk Rate Avg
+      'bwd_bytes_per_byte_avg',           // 59 - Bwd Byts/b Avg
+      'bwd_packets_per_byte_avg',         // 60 - Bwd Pkts/b Avg
+      'bwd_block_rate_avg',               // 61 - Bwd Blk Rate Avg
+      'subflow_fwd_packets',              // 62 - Subflow Fwd Pkts
+      'subflow_fwd_bytes',                // 63 - Subflow Fwd Byts
+      'subflow_bwd_packets',              // 64 - Subflow Bwd Pkts
+      'subflow_bwd_bytes',                // 65 - Subflow Bwd Byts
+      'init_fwd_win_bytes',               // 66 - Init Fwd Win Byts
+      'init_bwd_win_bytes',               // 67 - Init Bwd Win Byts
+      'fwd_act_data_packets',             // 68 - Fwd Act Data Pkts
+      'fwd_segment_size_min',             // 69 - Fwd Seg Size Min
+      'active_mean',                      // 70 - Active Mean
+      'active_std',                       // 71 - Active Std
+      'active_max',                       // 72 - Active Max
+      'active_min',                       // 73 - Active Min
+      'idle_mean',                        // 74 - Idle Mean
+      'idle_std',                         // 75 - Idle Std
+      'idle_max',                         // 76 - Idle Max
+      'idle_min'                          // 77 - Idle Min
     ];
   }
 
@@ -229,11 +234,33 @@ export class CICFlowMeterFeatureMapper {
     const features = [];
     
     for (const featureName of this.mlFeatureOrder) {
-      const value = dbRow[featureName] || 0;
+      let value = dbRow[featureName] || 0;
+      
+      // Special handling for protocol - ensure numeric (CICFlowMeter CSV already provides numeric values)
+      if (featureName === 'protocol') {
+        value = this.convertProtocolToNumeric(value);
+      }
+      
       features.push(this.convertToFloat(value));
     }
     
     return features;
+  }
+
+  /**
+   * Convert protocol value to numeric (CICFlowMeter CSV already provides numeric values)
+   * @param {string|number} protocol - Protocol value
+   * @returns {number} Numeric protocol value
+   */
+  convertProtocolToNumeric(protocol) {
+    // CICFlowMeter CSV already provides numeric protocol values (TCP=6, UDP=17, etc.)
+    // Just ensure it's a number and provide fallback
+    if (typeof protocol === 'number') {
+      return protocol;
+    }
+    
+    const numericProtocol = parseFloat(protocol);
+    return isNaN(numericProtocol) ? 6 : numericProtocol; // Default to TCP (6) if invalid
   }
 
   /**
@@ -242,12 +269,29 @@ export class CICFlowMeterFeatureMapper {
    * @param {string} columnName - Database column name
    * @returns {any} Converted value
    */
-  convertValue(value, columnName) {
+    convertValue(value, columnName) {
     if (value === null || value === undefined || value === '') {
       return null;
     }
 
-    // Convert to appropriate type based on column name
+    // ✅ Fix: parse timestamp từ định dạng DD/MM/YYYY hh:mm:ss AM/PM
+    if (columnName === 'flow_start_time') {
+      try {
+        const [datePart, timePart, ampm] = value.split(' ');
+        const [day, month, year] = datePart.split('/');
+        let [hour, minute, second] = timePart.split(':').map(Number);
+
+        if (ampm?.toUpperCase() === 'PM' && hour < 12) hour += 12;
+        if (ampm?.toUpperCase() === 'AM' && hour === 12) hour = 0;
+
+        const isoString = `${year}-${month}-${day} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}`;
+        return isoString; // PostgreSQL hiểu được format này
+      } catch (err) {
+        console.warn('[Mapper] Failed to parse timestamp:', value);
+        return null;
+      }
+    }
+
     if (columnName.includes('_count') || columnName.includes('_flags') || 
         columnName.includes('_packets') || columnName.includes('_bytes') ||
         columnName.includes('_length')) {
@@ -263,6 +307,7 @@ export class CICFlowMeterFeatureMapper {
     
     return value;
   }
+
 
   /**
    * Convert value to float for ML model

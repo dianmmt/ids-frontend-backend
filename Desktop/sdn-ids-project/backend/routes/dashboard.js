@@ -10,7 +10,7 @@ router.get('/summary', async (req, res) => {
     // Totals from existing view/tables
     const [flowsCount, attacksCount, nodesCount] = await Promise.all([
       pool.query('SELECT COUNT(*)::bigint AS count FROM flows'),
-      pool.query("SELECT COUNT(*)::bigint AS count FROM attack_events WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'"),
+      pool.query("SELECT COUNT(*)::bigint AS count FROM attack_events WHERE detected_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours' AND LOWER(attack_type) NOT IN ('normal', 'normal traffic', 'benign')"),
       pool.query('SELECT COUNT(*)::bigint AS count FROM network_nodes')
     ]);
 
